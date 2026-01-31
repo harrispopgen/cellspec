@@ -1,19 +1,14 @@
 """Compute mutation rates and callable sites."""
 
+import anndata as ad
 import numpy as np
 import pandas as pd
-import anndata as ad
 from scipy.sparse import issparse
 from tqdm import tqdm
-from typing import Optional
 
 
 def compute_callable_sites(
-    adata: ad.AnnData,
-    min_depth: int,
-    max_depth: Optional[int] = None,
-    key: str = "callable",
-    show_progress: bool = False
+    adata: ad.AnnData, min_depth: int, max_depth: int | None = None, key: str = "callable", show_progress: bool = False
 ) -> pd.Series:
     """
     Compute the number of callable sites per cell/sample.
@@ -51,11 +46,11 @@ def compute_callable_sites(
     This counts how many variants have adequate depth in each cell/sample,
     which serves as the denominator for mutation rate calculations.
     """
-    if 'DP' not in adata.layers:
+    if "DP" not in adata.layers:
         raise ValueError("adata.layers must contain 'DP' (total depth)")
 
     # Get depth matrix
-    DP = adata.layers['DP']
+    DP = adata.layers["DP"]
     if issparse(DP):
         DP = DP.toarray()
 
@@ -72,36 +67,28 @@ def compute_callable_sites(
         callable_counts[cell_idx] = mask.sum()
 
     # Create Series
-    callable_series = pd.Series(
-        callable_counts,
-        index=adata.obs_names,
-        name=f'{key}_sites'
-    )
+    callable_series = pd.Series(callable_counts, index=adata.obs_names, name=f"{key}_sites")
 
     # Store in adata.obs
-    adata.obs[f'{key}_sites'] = callable_series
+    adata.obs[f"{key}_sites"] = callable_series
 
     # Store metadata
-    adata.uns[f'{key}_metadata'] = {
-        'min_depth': min_depth,
-        'max_depth': max_depth
-    }
+    adata.uns[f"{key}_metadata"] = {"min_depth": min_depth, "max_depth": max_depth}
 
     return callable_series
 
 
 def compute_rates(
-    adata: ad.AnnData,
-    spectrum_key: str,
-    callable_key: str = "callable",
-    rate_key: Optional[str] = None
+    adata: ad.AnnData, spectrum_key: str, callable_key: str = "callable", rate_key: str | None = None
 ) -> pd.DataFrame:
     """
     Compute mutation rates (mutations per callable site) from spectrum.
 
-    This is a convenience function equivalent to:
-    normalize_spectrum(adata, key=spectrum_key, method='obs_column',
-                      obs_column=f'{callable_key}_sites', output_key=rate_key)
+    This is a convenience function equivalent to::
+
+        normalize_spectrum(
+            adata, key=spectrum_key, method="obs_column", obs_column=f"{callable_key}_sites", output_key=rate_key
+        )
 
     For more flexible normalization (by coverage, read count, custom vectors),
     use spc.tl.normalize_spectrum() instead.
@@ -127,10 +114,10 @@ def compute_rates(
     --------
     >>> import cellspec as spc
     >>> # Compute spectrum and callable sites
-    >>> spc.tl.compute_spectrum(adata, min_depth=10, key='somatic')
-    >>> spc.tl.compute_callable_sites(adata, min_depth=10, key='callable')
+    >>> spc.tl.compute_spectrum(adata, min_depth=10, key="somatic")
+    >>> spc.tl.compute_callable_sites(adata, min_depth=10, key="callable")
     >>> # Compute rates
-    >>> rates = spc.tl.compute_rates(adata, spectrum_key='somatic')
+    >>> rates = spc.tl.compute_rates(adata, spectrum_key="somatic")
 
     Notes
     -----
@@ -142,10 +129,10 @@ def compute_rates(
     normalize_spectrum : More general normalization function
     """
     if rate_key is None:
-        rate_key = f'{spectrum_key}_rate'
+        rate_key = f"{spectrum_key}_rate"
 
     # Get spectrum
-    spectrum_obsm_key = f'spectrum_{spectrum_key}'
+    spectrum_obsm_key = f"spectrum_{spectrum_key}"
     if spectrum_obsm_key not in adata.obsm:
         raise ValueError(
             f"'{spectrum_obsm_key}' not found in adata.obsm. "
@@ -155,7 +142,7 @@ def compute_rates(
     spectrum_df = adata.obsm[spectrum_obsm_key]
 
     # Get callable sites
-    callable_col = f'{callable_key}_sites'
+    callable_col = f"{callable_key}_sites"
     if callable_col not in adata.obs.columns:
         raise ValueError(
             f"'{callable_col}' not found in adata.obs. "
@@ -176,10 +163,6 @@ def compute_rates(
     adata.obsm[rate_key] = rates_df
 
     # Store metadata
-    adata.uns[f'{rate_key}_metadata'] = {
-        'spectrum_key': spectrum_key,
-        'callable_key': callable_key,
-        'is_rate': True
-    }
+    adata.uns[f"{rate_key}_metadata"] = {"spectrum_key": spectrum_key, "callable_key": callable_key, "is_rate": True}
 
     return rates_df

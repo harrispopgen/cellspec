@@ -1,22 +1,21 @@
 """Identify private mutations (unique to individual cells or groups)."""
 
+import anndata as ad
 import numpy as np
 import pandas as pd
-import anndata as ad
 from scipy.sparse import issparse
-from typing import Optional, List
 
 
 def private_mutations(
     adata: ad.AnnData,
-    groupby: Optional[str] = None,
-    count_strategy: str = 'presence',
-    genotypes: Optional[List[int]] = None,
-    min_alt_depth: Optional[int] = None,
-    min_depth: Optional[int] = None,
-    max_depth: Optional[int] = None,
-    store_key: str = 'private',
-    inplace: bool = True
+    groupby: str | None = None,
+    count_strategy: str = "presence",
+    genotypes: list[int] | None = None,
+    min_alt_depth: int | None = None,
+    min_depth: int | None = None,
+    max_depth: int | None = None,
+    store_key: str = "private",
+    inplace: bool = True,
 ) -> pd.DataFrame:
     """
     Identify mutations that are private (unique) to each cell/sample or group.
@@ -70,25 +69,17 @@ def private_mutations(
     >>> # Find private mutations for each sample (any non-zero genotype)
     >>> private_df = spc.tl.private_mutations(adata)
     >>> # Count per sample stored in adata.obs['private_count']
-    >>> print(adata.obs['private_count'])
+    >>> print(adata.obs["private_count"])
 
     >>> # Find private mutations per cell type
-    >>> private_df = spc.tl.private_mutations(adata, groupby='cell_type')
+    >>> private_df = spc.tl.private_mutations(adata, groupby="cell_type")
 
     >>> # Only count HOM_ALT (genotype=3) as private
-    >>> private_df = spc.tl.private_mutations(
-    ...     adata,
-    ...     count_strategy='genotype',
-    ...     genotypes=[3]
-    ... )
+    >>> private_df = spc.tl.private_mutations(adata, count_strategy="genotype", genotypes=[3])
 
     >>> # Use alternate depth with depth filtering
     >>> private_df = spc.tl.private_mutations(
-    ...     adata,
-    ...     count_strategy='alt_depth',
-    ...     min_alt_depth=3,
-    ...     min_depth=10,
-    ...     max_depth=200
+    ...     adata, count_strategy="alt_depth", min_alt_depth=3, min_depth=10, max_depth=200
     ... )
 
     Notes
@@ -110,24 +101,23 @@ def private_mutations(
 
     Summing along axis=1 (across cells/groups) should give values of 0 or 1,
     since a mutation can only be private to one cell/group.
-    - Results are stored in:
-      - adata.uns[f'{store_key}_mutations']: Boolean DataFrame (variants × cells/groups)
-      - adata.obs[f'{store_key}_count'] or adata.uns[f'{store_key}_counts']:
-        Count of private mutations per cell/group
-      - adata.uns[f'{store_key}_metadata']: Parameters used
+
+    Results are stored in:
+
+    - adata.uns[f'{store_key}_mutations']: Boolean DataFrame (variants × cells/groups)
+    - adata.obs[f'{store_key}_count'] or adata.uns[f'{store_key}_counts']:
+      Count of private mutations per cell/group
+    - adata.uns[f'{store_key}_metadata']: Parameters used
     """
     # Validate inputs
-    valid_strategies = ['presence', 'genotype', 'alt_depth']
+    valid_strategies = ["presence", "genotype", "alt_depth"]
     if count_strategy not in valid_strategies:
-        raise ValueError(
-            f"Invalid count_strategy '{count_strategy}'. "
-            f"Must be one of: {', '.join(valid_strategies)}"
-        )
+        raise ValueError(f"Invalid count_strategy '{count_strategy}'. Must be one of: {', '.join(valid_strategies)}")
 
-    if count_strategy == 'genotype' and genotypes is None:
+    if count_strategy == "genotype" and genotypes is None:
         raise ValueError("count_strategy='genotype' requires genotypes parameter")
 
-    if count_strategy == 'alt_depth' and min_alt_depth is None:
+    if count_strategy == "alt_depth" and min_alt_depth is None:
         raise ValueError("count_strategy='alt_depth' requires min_alt_depth parameter")
 
     # Get data matrices
@@ -137,18 +127,18 @@ def private_mutations(
 
     # Get layers if needed
     if min_depth is not None or max_depth is not None:
-        if 'DP' not in adata.layers:
+        if "DP" not in adata.layers:
             raise ValueError("min_depth/max_depth requires 'DP' layer in adata.layers")
-        DP = adata.layers['DP']
+        DP = adata.layers["DP"]
         if issparse(DP):
             DP = DP.toarray()
     else:
         DP = None
 
-    if count_strategy == 'alt_depth':
-        if 'AD' not in adata.layers:
+    if count_strategy == "alt_depth":
+        if "AD" not in adata.layers:
             raise ValueError("count_strategy='alt_depth' requires 'AD' layer")
-        AD = adata.layers['AD']
+        AD = adata.layers["AD"]
         if issparse(AD):
             AD = AD.toarray()
     else:
@@ -164,11 +154,11 @@ def private_mutations(
 
         for i, name in enumerate(cell_names):
             # Determine if mutation is "present" based on count_strategy
-            if count_strategy == 'presence':
+            if count_strategy == "presence":
                 mask_current = X[i, :] > 0
-            elif count_strategy == 'genotype':
+            elif count_strategy == "genotype":
                 mask_current = np.isin(X[i, :], genotypes)
-            elif count_strategy == 'alt_depth':
+            elif count_strategy == "alt_depth":
                 mask_current = AD[i, :] >= min_alt_depth
 
             # Apply per-cell depth filtering
@@ -185,11 +175,11 @@ def private_mutations(
             # For each other cell, check if mutation is present (using same strategy)
             present_in_others = np.zeros(adata.n_vars, dtype=bool)
             for j in other_indices:
-                if count_strategy == 'presence':
+                if count_strategy == "presence":
                     mask_other = X[j, :] > 0
-                elif count_strategy == 'genotype':
+                elif count_strategy == "genotype":
                     mask_other = np.isin(X[j, :], genotypes)
-                elif count_strategy == 'alt_depth':
+                elif count_strategy == "alt_depth":
                     mask_other = AD[j, :] >= min_alt_depth
 
                 # Apply per-cell depth filtering
@@ -206,35 +196,34 @@ def private_mutations(
             private_dict[name] = in_current & not_in_others
 
         # Create DataFrame
-        private_df = pd.DataFrame.from_dict(private_dict, orient='columns')
+        private_df = pd.DataFrame.from_dict(private_dict, orient="columns")
         private_df.index = adata.var.index
 
         # Store counts in .obs
         if inplace:
             counts = private_df.sum(axis=0)
-            adata.obs[f'{store_key}_count'] = counts
-            adata.uns[f'{store_key}_mutations'] = private_df
+            adata.obs[f"{store_key}_count"] = counts
+            adata.uns[f"{store_key}_mutations"] = private_df
 
             metadata = {
-                'groupby': None,
-                'count_strategy': count_strategy,
-                'min_depth': min_depth,
-                'max_depth': max_depth,
-                'n_cells': n_groups
+                "groupby": None,
+                "count_strategy": count_strategy,
+                "min_depth": min_depth,
+                "max_depth": max_depth,
+                "n_cells": n_groups,
             }
-            if count_strategy == 'genotype':
-                metadata['genotypes'] = genotypes
-            if count_strategy == 'alt_depth':
-                metadata['min_alt_depth'] = min_alt_depth
+            if count_strategy == "genotype":
+                metadata["genotypes"] = genotypes
+            if count_strategy == "alt_depth":
+                metadata["min_alt_depth"] = min_alt_depth
 
-            adata.uns[f'{store_key}_metadata'] = metadata
+            adata.uns[f"{store_key}_metadata"] = metadata
 
     else:
         # Group by column in .obs
         if groupby not in adata.obs.columns:
             raise ValueError(
-                f"groupby column '{groupby}' not found in adata.obs. "
-                f"Available columns: {list(adata.obs.columns)}"
+                f"groupby column '{groupby}' not found in adata.obs. Available columns: {list(adata.obs.columns)}"
             )
 
         # Get unique groups
@@ -256,11 +245,11 @@ def private_mutations(
             # Initialize to True, then use AND to require presence in every cell
             shared_in_current_group = np.ones(adata.n_vars, dtype=bool)
             for i in current_indices:
-                if count_strategy == 'presence':
+                if count_strategy == "presence":
                     mask = X[i, :] > 0
-                elif count_strategy == 'genotype':
+                elif count_strategy == "genotype":
                     mask = np.isin(X[i, :], genotypes)
-                elif count_strategy == 'alt_depth':
+                elif count_strategy == "alt_depth":
                     mask = AD[i, :] >= min_alt_depth
 
                 # Apply per-cell depth filtering
@@ -275,11 +264,11 @@ def private_mutations(
             # For each cell in other groups, check if mutation is present
             present_in_other_groups = np.zeros(adata.n_vars, dtype=bool)
             for i in other_indices:
-                if count_strategy == 'presence':
+                if count_strategy == "presence":
                     mask = X[i, :] > 0
-                elif count_strategy == 'genotype':
+                elif count_strategy == "genotype":
                     mask = np.isin(X[i, :], genotypes)
-                elif count_strategy == 'alt_depth':
+                elif count_strategy == "alt_depth":
                     mask = AD[i, :] >= min_alt_depth
 
                 # Apply per-cell depth filtering
@@ -296,37 +285,39 @@ def private_mutations(
             private_dict[str(group)] = shared_in_current_group & not_in_others
 
         # Create DataFrame
-        private_df = pd.DataFrame.from_dict(private_dict, orient='columns')
+        private_df = pd.DataFrame.from_dict(private_dict, orient="columns")
         private_df.index = adata.var.index
 
         # Store counts
         if inplace:
             counts = private_df.sum(axis=0)
-            adata.uns[f'{store_key}_counts'] = counts.to_dict()  # Convert Series to dict for h5ad compatibility
-            adata.uns[f'{store_key}_mutations'] = private_df
+            adata.uns[f"{store_key}_counts"] = counts.to_dict()  # Convert Series to dict for h5ad compatibility
+            adata.uns[f"{store_key}_mutations"] = private_df
 
             metadata = {
-                'groupby': groupby,
-                'count_strategy': count_strategy,
-                'min_depth': min_depth,
-                'max_depth': max_depth,
-                'n_groups': n_groups,
-                'groups': list(groups)
+                "groupby": groupby,
+                "count_strategy": count_strategy,
+                "min_depth": min_depth,
+                "max_depth": max_depth,
+                "n_groups": n_groups,
+                "groups": list(groups),
             }
-            if count_strategy == 'genotype':
-                metadata['genotypes'] = genotypes
-            if count_strategy == 'alt_depth':
-                metadata['min_alt_depth'] = min_alt_depth
+            if count_strategy == "genotype":
+                metadata["genotypes"] = genotypes
+            if count_strategy == "alt_depth":
+                metadata["min_alt_depth"] = min_alt_depth
 
-            adata.uns[f'{store_key}_metadata'] = metadata
+            adata.uns[f"{store_key}_metadata"] = metadata
 
     # Validation check
     max_private_per_mutation = private_df.sum(axis=1).max()
     if max_private_per_mutation > 1:
         import warnings
+
         warnings.warn(
             f"Found mutations marked as private to multiple cells/groups (max={max_private_per_mutation}). "
-            "This suggests a bug - please check your data or contact the developers."
+            "This suggests a bug - please check your data or contact the developers.",
+            stacklevel=2,
         )
 
     return private_df

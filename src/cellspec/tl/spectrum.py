@@ -1,27 +1,26 @@
 """Compute mutation spectra from AnnData objects."""
 
+import anndata as ad
 import numpy as np
 import pandas as pd
-import anndata as ad
 from scipy.sparse import issparse
 from tqdm import tqdm
-from typing import Optional, List, Union
 
-from ..utils.constants import get_canonical_96_order
+from cellspec.utils.constants import get_canonical_96_order
 
 
 def compute_spectrum(
     adata: ad.AnnData,
     count_strategy: str = "presence",
-    genotypes: Optional[List[int]] = None,
-    min_alt_depth: Optional[int] = None,
-    min_depth: Optional[int] = None,
-    max_depth: Optional[int] = None,
-    variant_mask: Optional[Union[pd.DataFrame, np.ndarray]] = None,
-    private_key: Optional[str] = None,
+    genotypes: list[int] | None = None,
+    min_alt_depth: int | None = None,
+    min_depth: int | None = None,
+    max_depth: int | None = None,
+    variant_mask: pd.DataFrame | np.ndarray | None = None,
+    private_key: str | None = None,
     key: str = "spectrum",
     show_progress: bool = True,
-    description: Optional[str] = None
+    description: str | None = None,
 ) -> pd.DataFrame:
     """
     Compute 96-channel mutation spectrum for each cell/sample or per private mutation group.
@@ -50,11 +49,13 @@ def compute_spectrum(
         Maximum DP for counting per cell (filters during counting)
     variant_mask : pd.DataFrame or np.ndarray, optional
         Boolean mask specifying which variants to count for each cell.
+
         - If DataFrame: rows are variants (matching adata.var.index),
           columns are cells (matching adata.obs_names)
         - If np.ndarray: shape (n_cells, n_variants) or (n_variants,)
         - If (n_variants,): same mask applied to all cells
         - True = count this variant for this cell, False = exclude
+
         Note: Cannot be used together with private_key.
     private_key : str, optional
         Key for private mutations DataFrame in adata.uns (e.g., 'private').
@@ -63,6 +64,7 @@ def compute_spectrum(
         For each group, counts trinucleotide contexts for variants private to that group
         within cells belonging to that group.
         Returns (96 contexts × groups) DataFrame stored in adata.uns[f'spectrum_{key}'].
+
         Note: Cannot be used together with variant_mask.
     key : str, default 'spectrum'
         Key for storing spectrum (in adata.obsm if per-cell, adata.uns if per-group)
@@ -81,29 +83,20 @@ def compute_spectrum(
     Examples
     --------
     >>> import cellspec as spc
-    >>> adata = spc.pp.load_vcf('variants.vcf.gz')
-    >>> spc.pp.annotate_contexts(adata, 'reference.fa')
+    >>> adata = spc.pp.load_vcf("variants.vcf.gz")
+    >>> spc.pp.annotate_contexts(adata, "reference.fa")
     >>> spc.pp.filter_to_snps(adata)
     >>>
     >>> # Count all variants present (default) - per cell
-    >>> spectrum = spc.tl.compute_spectrum(adata, key='all')
+    >>> spectrum = spc.tl.compute_spectrum(adata, key="all")
     >>>
     >>> # Count only sites with DP >= 10 - per cell
-    >>> spectrum = spc.tl.compute_spectrum(
-    ...     adata,
-    ...     min_depth=10,
-    ...     max_depth=200,
-    ...     key='dp10'
-    ... )
+    >>> spectrum = spc.tl.compute_spectrum(adata, min_depth=10, max_depth=200, key="dp10")
     >>>
     >>> # Compute spectrum per private mutation group
-    >>> spc.tl.private_mutations(adata, groupby='lineage', genotypes=[3], store_key='private')
+    >>> spc.tl.private_mutations(adata, groupby="lineage", genotypes=[3], store_key="private")
     >>> spectrum = spc.tl.compute_spectrum(
-    ...     adata,
-    ...     count_strategy='genotype',
-    ...     genotypes=[3],
-    ...     private_key='private',
-    ...     key='private'
+    ...     adata, count_strategy="genotype", genotypes=[3], private_key="private", key="private"
     ... )
     >>> # Returns (96 contexts × lineages) DataFrame in adata.uns['spectrum_private']
 
@@ -132,23 +125,17 @@ def compute_spectrum(
     - adata.uns[f'spectrum_{key}_metadata']: Dict with computation details
     """
     # Validate inputs
-    if 'trinuc_type' not in adata.var.columns:
-        raise ValueError(
-            "'trinuc_type' not found in adata.var. "
-            "Run spc.pp.annotate_contexts() first."
-        )
+    if "trinuc_type" not in adata.var.columns:
+        raise ValueError("'trinuc_type' not found in adata.var. Run spc.pp.annotate_contexts() first.")
 
-    valid_strategies = ['presence', 'genotype', 'alt_depth']
+    valid_strategies = ["presence", "genotype", "alt_depth"]
     if count_strategy not in valid_strategies:
-        raise ValueError(
-            f"Invalid count_strategy '{count_strategy}'. "
-            f"Must be one of: {', '.join(valid_strategies)}"
-        )
+        raise ValueError(f"Invalid count_strategy '{count_strategy}'. Must be one of: {', '.join(valid_strategies)}")
 
-    if count_strategy == 'alt_depth' and min_alt_depth is None:
+    if count_strategy == "alt_depth" and min_alt_depth is None:
         raise ValueError("count_strategy='alt_depth' requires min_alt_depth parameter")
 
-    if count_strategy == 'genotype' and genotypes is None:
+    if count_strategy == "genotype" and genotypes is None:
         raise ValueError("count_strategy='genotype' requires genotypes parameter")
 
     if variant_mask is not None and private_key is not None:
@@ -166,7 +153,7 @@ def compute_spectrum(
             max_depth=max_depth,
             key=key,
             show_progress=show_progress,
-            description=description
+            description=description,
         )
 
     # Process variant_mask
@@ -201,7 +188,7 @@ def compute_spectrum(
     spectrum_matrix = np.zeros((n_cells, n_contexts), dtype=int)
 
     # Get trinuc types for each variant
-    trinuc_types = adata.var['trinuc_type'].values
+    trinuc_types = adata.var["trinuc_type"].values
 
     # Create mapping from trinuc context to index
     context_to_idx = {context: idx for idx, context in enumerate(canonical_contexts)}
@@ -213,36 +200,38 @@ def compute_spectrum(
 
     # Get layers if needed
     if min_depth is not None or max_depth is not None:
-        if 'DP' not in adata.layers:
+        if "DP" not in adata.layers:
             raise ValueError("min_depth/max_depth requires 'DP' layer in adata.layers")
-        DP = adata.layers['DP']
+        DP = adata.layers["DP"]
         if issparse(DP):
             DP = DP.toarray()
     else:
         DP = None
 
-    if count_strategy == 'alt_depth':
-        if 'AD' not in adata.layers:
+    if count_strategy == "alt_depth":
+        if "AD" not in adata.layers:
             raise ValueError("count_strategy='alt_depth' requires 'AD' layer")
-        AD = adata.layers['AD']
+        AD = adata.layers["AD"]
         if issparse(AD):
             AD = AD.toarray()
     else:
         AD = None
 
     # Compute spectrum for each cell
-    iterator = tqdm(range(n_cells), desc=f"Computing spectrum (key='{key}')", unit="cell") if show_progress else range(n_cells)
+    iterator = (
+        tqdm(range(n_cells), desc=f"Computing spectrum (key='{key}')", unit="cell") if show_progress else range(n_cells)
+    )
 
     for cell_idx in iterator:
         # Start with presence from .X
-        if count_strategy == 'presence':
+        if count_strategy == "presence":
             mask = X[cell_idx, :] > 0  # Binary presence
 
-        elif count_strategy == 'genotype':
+        elif count_strategy == "genotype":
             # Count specific genotypes
             mask = np.isin(X[cell_idx, :], genotypes)
 
-        elif count_strategy == 'alt_depth':
+        elif count_strategy == "alt_depth":
             # Count sites with AD >= threshold
             mask = AD[cell_idx, :] >= min_alt_depth
 
@@ -265,31 +254,27 @@ def compute_spectrum(
                 spectrum_matrix[cell_idx, context_to_idx[trinuc]] += 1
 
     # Create DataFrame
-    spectrum_df = pd.DataFrame(
-        spectrum_matrix,
-        index=adata.obs_names,
-        columns=canonical_contexts
-    )
+    spectrum_df = pd.DataFrame(spectrum_matrix, index=adata.obs_names, columns=canonical_contexts)
 
     # Store in adata
-    adata.obsm[f'spectrum_{key}'] = spectrum_df
+    adata.obsm[f"spectrum_{key}"] = spectrum_df
 
     # Store metadata
     metadata = {
-        'count_strategy': count_strategy,
-        'min_depth': min_depth,
-        'max_depth': max_depth,
-        'description': description,
-        'n_cells': n_cells,
-        'n_variants': adata.n_vars,
-        'variant_mask_applied': variant_mask is not None
+        "count_strategy": count_strategy,
+        "min_depth": min_depth,
+        "max_depth": max_depth,
+        "description": description,
+        "n_cells": n_cells,
+        "n_variants": adata.n_vars,
+        "variant_mask_applied": variant_mask is not None,
     }
-    if count_strategy == 'genotype':
-        metadata['genotypes'] = genotypes
-    if count_strategy == 'alt_depth':
-        metadata['min_alt_depth'] = min_alt_depth
+    if count_strategy == "genotype":
+        metadata["genotypes"] = genotypes
+    if count_strategy == "alt_depth":
+        metadata["min_alt_depth"] = min_alt_depth
 
-    adata.uns[f'spectrum_{key}_metadata'] = metadata
+    adata.uns[f"spectrum_{key}_metadata"] = metadata
 
     return spectrum_df
 
@@ -298,13 +283,13 @@ def _compute_spectrum_per_group(
     adata: ad.AnnData,
     private_key: str,
     count_strategy: str,
-    genotypes: Optional[List[int]],
-    min_alt_depth: Optional[int],
-    min_depth: Optional[int],
-    max_depth: Optional[int],
+    genotypes: list[int] | None,
+    min_alt_depth: int | None,
+    min_depth: int | None,
+    max_depth: int | None,
     key: str,
     show_progress: bool,
-    description: Optional[str]
+    description: str | None,
 ) -> pd.DataFrame:
     """
     Internal function to compute spectrum per private mutation group.
@@ -315,8 +300,8 @@ def _compute_spectrum_per_group(
     Returns (96 contexts × groups) DataFrame.
     """
     # Load private mutations data from adata.uns
-    private_mutations_key = f'{private_key}_mutations'
-    private_metadata_key = f'{private_key}_metadata'
+    private_mutations_key = f"{private_key}_mutations"
+    private_metadata_key = f"{private_key}_metadata"
 
     if private_mutations_key not in adata.uns:
         raise ValueError(
@@ -332,7 +317,7 @@ def _compute_spectrum_per_group(
 
     private_df = adata.uns[private_mutations_key]
     private_metadata = adata.uns[private_metadata_key]
-    groupby = private_metadata.get('groupby', None)
+    groupby = private_metadata.get("groupby", None)
 
     # Get canonical 96 order
     canonical_contexts = get_canonical_96_order()
@@ -340,7 +325,7 @@ def _compute_spectrum_per_group(
     context_to_idx = {context: idx for idx, context in enumerate(canonical_contexts)}
 
     # Get trinuc types for each variant
-    trinuc_types = adata.var['trinuc_type'].values
+    trinuc_types = adata.var["trinuc_type"].values
 
     # Get data matrices
     X = adata.X
@@ -349,18 +334,18 @@ def _compute_spectrum_per_group(
 
     # Get layers if needed
     if min_depth is not None or max_depth is not None:
-        if 'DP' not in adata.layers:
+        if "DP" not in adata.layers:
             raise ValueError("min_depth/max_depth requires 'DP' layer in adata.layers")
-        DP = adata.layers['DP']
+        DP = adata.layers["DP"]
         if issparse(DP):
             DP = DP.toarray()
     else:
         DP = None
 
-    if count_strategy == 'alt_depth':
-        if 'AD' not in adata.layers:
+    if count_strategy == "alt_depth":
+        if "AD" not in adata.layers:
             raise ValueError("count_strategy='alt_depth' requires 'AD' layer")
-        AD = adata.layers['AD']
+        AD = adata.layers["AD"]
         if issparse(AD):
             AD = AD.toarray()
     else:
@@ -372,7 +357,11 @@ def _compute_spectrum_per_group(
     spectrum_matrix = np.zeros((n_contexts, n_groups), dtype=int)
 
     # Iterate over groups
-    iterator = tqdm(enumerate(groups), total=n_groups, desc=f"Computing spectrum (key='{key}')", unit="group") if show_progress else enumerate(groups)
+    iterator = (
+        tqdm(enumerate(groups), total=n_groups, desc=f"Computing spectrum (key='{key}')", unit="group")
+        if show_progress
+        else enumerate(groups)
+    )
 
     for group_idx, group in iterator:
         # Get boolean mask of variants private to this group
@@ -400,11 +389,11 @@ def _compute_spectrum_per_group(
         # For each cell in this group, count private variants
         for cell_idx in cell_indices:
             # Apply count_strategy
-            if count_strategy == 'presence':
+            if count_strategy == "presence":
                 mask = X[cell_idx, :] > 0
-            elif count_strategy == 'genotype':
+            elif count_strategy == "genotype":
                 mask = np.isin(X[cell_idx, :], genotypes)
-            elif count_strategy == 'alt_depth':
+            elif count_strategy == "alt_depth":
                 mask = AD[cell_idx, :] >= min_alt_depth
 
             # Apply per-cell depth filtering
@@ -425,33 +414,29 @@ def _compute_spectrum_per_group(
                     spectrum_matrix[context_to_idx[trinuc], group_idx] += 1
 
     # Create DataFrame (96 contexts × groups)
-    spectrum_df = pd.DataFrame(
-        spectrum_matrix,
-        index=canonical_contexts,
-        columns=groups
-    )
+    spectrum_df = pd.DataFrame(spectrum_matrix, index=canonical_contexts, columns=groups)
 
     # Store in adata.uns (not adata.obsm since it's not per-cell)
-    adata.uns[f'spectrum_{key}'] = spectrum_df
+    adata.uns[f"spectrum_{key}"] = spectrum_df
 
     # Store metadata
     metadata = {
-        'mode': 'per_group',
-        'private_key': private_key,
-        'groupby': groupby,
-        'count_strategy': count_strategy,
-        'min_depth': min_depth,
-        'max_depth': max_depth,
-        'description': description,
-        'n_groups': n_groups,
-        'groups': groups,
-        'n_variants': adata.n_vars
+        "mode": "per_group",
+        "private_key": private_key,
+        "groupby": groupby,
+        "count_strategy": count_strategy,
+        "min_depth": min_depth,
+        "max_depth": max_depth,
+        "description": description,
+        "n_groups": n_groups,
+        "groups": groups,
+        "n_variants": adata.n_vars,
     }
-    if count_strategy == 'genotype':
-        metadata['genotypes'] = genotypes
-    if count_strategy == 'alt_depth':
-        metadata['min_alt_depth'] = min_alt_depth
+    if count_strategy == "genotype":
+        metadata["genotypes"] = genotypes
+    if count_strategy == "alt_depth":
+        metadata["min_alt_depth"] = min_alt_depth
 
-    adata.uns[f'spectrum_{key}_metadata'] = metadata
+    adata.uns[f"spectrum_{key}_metadata"] = metadata
 
     return spectrum_df
