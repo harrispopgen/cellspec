@@ -440,3 +440,111 @@ def _compute_spectrum_per_group(
     adata.uns[f"spectrum_{key}_metadata"] = metadata
 
     return spectrum_df
+
+
+def compute_spectrum_from_mask(
+    adata: ad.AnnData | None = None,
+    variant_mask: str | pd.Series | np.ndarray | None = None,
+    trinuc_contexts: pd.Series | None = None,
+    key: str | None = None,
+) -> pd.Series:
+    """
+    Compute 96-channel mutation spectrum from a boolean mask of variants.
+
+    Simple function to count trinucleotide contexts for a subset of variants.
+    Works with AnnData objects or directly with trinucleotide context series.
+
+    Parameters
+    ----------
+    adata : ad.AnnData, optional
+        AnnData with annotated variants (must have 'trinuc_type' in .var)
+    variant_mask : str, pd.Series, or np.ndarray, optional
+        Boolean mask specifying which variants to count:
+
+        - str: Column name in adata.var
+        - pd.Series: Boolean series
+        - np.ndarray: Boolean array
+
+        If None, counts all variants.
+    trinuc_contexts : pd.Series, optional
+        Trinucleotide contexts directly (if not using adata).
+        Should contain 96-type labels (e.g., 'ACA>AAA')
+    key : str, optional
+        If provided, stores result in adata.uns[f'spectrum_{key}']
+
+    Returns
+    -------
+    pd.Series
+        Counts for each of the 96 mutation types
+
+    Examples
+    --------
+    >>> import cellspec as spc
+    >>>
+    >>> # From AnnData with column name
+    >>> adata.var["is_somatic"] = adata.var["VAF"] > 0.1
+    >>> spectrum = spc.tl.compute_spectrum_from_mask(adata, "is_somatic")
+    >>>
+    >>> # From AnnData with boolean series
+    >>> high_qual = (adata.var["QUAL"] > 30) & (adata.var["DP"] > 100)
+    >>> spectrum = spc.tl.compute_spectrum_from_mask(adata, high_qual)
+    >>>
+    >>> # Directly from trinuc_type series
+    >>> contexts = adata.var.loc[mask, "trinuc_type"]
+    >>> spectrum = spc.tl.compute_spectrum_from_mask(trinuc_contexts=contexts)
+    >>>
+    >>> # Plot with spc.pl.spectrum_from_df
+    >>> spc.pl.spectrum_from_df(spectrum, normalize=True)
+
+    See Also
+    --------
+    compute_spectrum : Full spectrum computation with more options
+    pl.spectrum_from_df : Plot spectrum from Series/DataFrame
+    """
+    # Get trinucleotide contexts
+    if trinuc_contexts is not None:
+        # Using directly provided contexts
+        contexts = trinuc_contexts
+    elif adata is not None:
+        # Get from AnnData
+        if "trinuc_type" not in adata.var.columns:
+            raise ValueError("'trinuc_type' not found in adata.var. Run spc.pp.annotate_contexts() first.")
+
+        # Apply mask if provided
+        if variant_mask is None:
+            contexts = adata.var["trinuc_type"]
+        elif isinstance(variant_mask, str):
+            # Column name
+            if variant_mask not in adata.var.columns:
+                raise ValueError(f"Column '{variant_mask}' not found in adata.var")
+            mask = adata.var[variant_mask]
+            if not mask.dtype == bool:
+                raise ValueError(f"Column '{variant_mask}' must be boolean, got {mask.dtype}")
+            contexts = adata.var.loc[mask, "trinuc_type"]
+        elif isinstance(variant_mask, (pd.Series, np.ndarray)):
+            # Boolean series or array
+            if isinstance(variant_mask, np.ndarray):
+                mask = pd.Series(variant_mask, index=adata.var_names)
+            else:
+                mask = variant_mask
+            if not mask.dtype == bool:
+                raise ValueError(f"Mask must be boolean, got {mask.dtype}")
+            contexts = adata.var.loc[mask, "trinuc_type"]
+        else:
+            raise TypeError(f"variant_mask must be str, pd.Series, or np.ndarray, got {type(variant_mask)}")
+    else:
+        raise ValueError("Must provide either 'adata' or 'trinuc_contexts'")
+
+    # Count trinucleotide types (excluding NaN)
+    canonical_order = get_canonical_96_order()
+    counts = contexts.value_counts()
+
+    # Create full spectrum with zeros for missing types
+    spectrum = pd.Series(0, index=canonical_order, dtype=int)
+    spectrum.update(counts)
+
+    # Store in adata if requested
+    if adata is not None and key is not None:
+        adata.uns[f"spectrum_{key}"] = spectrum
+
+    return spectrum

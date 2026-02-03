@@ -1,10 +1,10 @@
 """Trinucleotide context utilities."""
 
 import re
+
 import numpy as np
 from Bio.Seq import Seq
 from scipy.stats import hypergeom
-from typing import Optional, Tuple
 
 
 def reverse_complement(seq: str) -> str:
@@ -23,7 +23,7 @@ def reverse_complement(seq: str) -> str:
 
     Examples
     --------
-    >>> reverse_complement('ATG')
+    >>> reverse_complement("ATG")
     'CAT'
     """
     return str(Seq(seq).reverse_complement())
@@ -50,9 +50,9 @@ def strand_standardize_trinuc(ref_trinuc: str, alt_base: str) -> str:
 
     Examples
     --------
-    >>> strand_standardize_trinuc('TCG', 'T')
+    >>> strand_standardize_trinuc("TCG", "T")
     'TCG>TTG'
-    >>> strand_standardize_trinuc('AGT', 'C')  # A is purine, gets flipped to T
+    >>> strand_standardize_trinuc("AGT", "C")  # A is purine, gets flipped to T
     'ACT>GCT'
     """
     if ref_trinuc[1] in "AG":
@@ -63,7 +63,7 @@ def strand_standardize_trinuc(ref_trinuc: str, alt_base: str) -> str:
         return f"{ref_trinuc}>{ref_trinuc[0]}{alt_base}{ref_trinuc[2]}"
 
 
-def parse_variant_id(variant_id: str, chrom_prefix: Optional[str] = None) -> Optional[Tuple[str, int, str, str]]:
+def parse_variant_id(variant_id: str, chrom_prefix: str | None = None) -> tuple[str, int, str, str] | None:
     """
     Parse a variant ID string into its components.
 
@@ -82,18 +82,20 @@ def parse_variant_id(variant_id: str, chrom_prefix: Optional[str] = None) -> Opt
 
     Examples
     --------
-    >>> parse_variant_id('chr1-12345-A>T', chrom_prefix='chr')
+    >>> parse_variant_id("chr1-12345-A>T", chrom_prefix="chr")
     ('chr1', 12345, 'A', 'T')
-    >>> parse_variant_id('I-12345-A>T', chrom_prefix=None)
+    >>> parse_variant_id("I-12345-A>T", chrom_prefix=None)
     ('I', 12345, 'A', 'T')
+    >>> parse_variant_id("CP116366.1-12345-A>T", chrom_prefix=None)
+    ('CP116366.1', 12345, 'A', 'T')
     """
     # Build regex pattern based on chrom_prefix
     if chrom_prefix is not None:
-        # Expect specific prefix
-        pattern = rf"({chrom_prefix}[\w]+)-(\d+)-([ACGT.]+)>([ACGT.]+)"
+        # Expect specific prefix (include dots for version numbers)
+        pattern = rf"({chrom_prefix}[\w.]+)-(\d+)-([ACGT.]+)>([ACGT.]+)"
     else:
-        # Accept any chromosome name (alphanumeric, including roman numerals)
-        pattern = r"([\w]+)-(\d+)-([ACGT.]+)>([ACGT.]+)"
+        # Accept any chromosome name (alphanumeric, dots for version numbers, including roman numerals)
+        pattern = r"([\w.]+)-(\d+)-([ACGT.]+)>([ACGT.]+)"
 
     match = re.match(pattern, variant_id)
     if not match:
@@ -118,7 +120,7 @@ def classify_mutation_type(mut_context: str) -> str:
 
     Examples
     --------
-    >>> classify_mutation_type('ACA>AAA')
+    >>> classify_mutation_type("ACA>AAA")
     'C>A'
     """
     if len(mut_context) < 7:
@@ -167,11 +169,7 @@ def compute_vaf(ad: np.ndarray, dp: np.ndarray, target_dp: int = 10) -> np.ndarr
 
     # Only apply hypergeometric to rows that need it
     if needs_downsampling.any():
-        downsampled_ad[needs_downsampling] = hypergeom.rvs(
-            dp[needs_downsampling],
-            ad[needs_downsampling],
-            target_dp
-        )
+        downsampled_ad[needs_downsampling] = hypergeom.rvs(dp[needs_downsampling], ad[needs_downsampling], target_dp)
 
     downsampled_dp = np.minimum(dp, target_dp)
     return downsampled_ad / downsampled_dp
