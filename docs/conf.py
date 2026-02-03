@@ -124,6 +124,10 @@ html_theme_options = {
     "use_repository_button": True,
     "path_to_docs": "docs/",
     "navigation_with_keys": False,
+    "logo": {
+        "image_light": "_static/cellspec_logo.png",
+        "image_dark": "_static/cellspec_logo.png",
+    },
 }
 
 pygments_style = "default"
