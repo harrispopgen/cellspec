@@ -157,9 +157,10 @@ def compute_bulk_vaf(
 
     # If target_dp not specified, use minimum depth across all sites
     if target_dp is None:
-        target_dp = int(np.min(bulk_dp[bulk_dp > 0]))
-        if target_dp == 0:
+        nonzero_depths = bulk_dp[bulk_dp > 0]
+        if nonzero_depths.size == 0:
             raise ValueError("All sites have zero depth. Cannot compute bulk VAF.")
+        target_dp = int(np.min(nonzero_depths))
 
     # Compute VAF with hypergeometric downsampling
     bulk_vaf = compute_vaf(bulk_ad, bulk_dp, target_dp=target_dp)
