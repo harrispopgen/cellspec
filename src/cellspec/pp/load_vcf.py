@@ -19,6 +19,8 @@ def load_vcf(
     - .layers['DP']: Total depth per variant per sample/cell
     - .layers['AD']: Alternate allele depth per variant per sample/cell
     - .var_names: Variant IDs in format 'chr-pos-ref>alt' (pos is 1-based, matching VCF)
+    - .var['chrom']: Chromosome name for each variant
+    - .var['pos']: Genomic position for each variant (1-based, matching VCF)
     - .obs_names: Sample/cell names from VCF
 
     Duplicate variants (same CHROM-POS-REF>ALT) are detected and only the first
@@ -82,6 +84,8 @@ def load_vcf(
 
     # Stream through VCF once, filtering and processing as we go
     variant_ids = []
+    chroms = []
+    positions = []
     depth_data = []
     alt_data = []
     genotype_data = []
@@ -112,6 +116,8 @@ def load_vcf(
 
         seen_variants.add(variant_id)
         variant_ids.append(variant_id)
+        chroms.append(variant.CHROM)
+        positions.append(variant.POS)
 
         # Get depths
         # cyvcf2 uses various sentinel values for missing data:
@@ -187,6 +193,10 @@ def load_vcf(
     # Set names
     adata.obs_names = cell_names
     adata.var_names = variant_ids
+
+    # Add genomic position annotations
+    adata.var["chrom"] = chroms
+    adata.var["pos"] = positions
 
     # Add basic metadata
     adata.uns["vcf_source"] = vcf_path
