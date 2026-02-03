@@ -1,18 +1,14 @@
 """Load VCF files into AnnData objects."""
 
-import numpy as np
 import anndata as ad
+import numpy as np
 from cyvcf2 import VCF
 from scipy.sparse import csr_matrix
 from tqdm import tqdm
-from typing import Optional
 
 
 def load_vcf(
-    vcf_path: str,
-    show_progress: bool = True,
-    sparse: bool = True,
-    skip_missing_alt: bool = True
+    vcf_path: str, show_progress: bool = True, sparse: bool = True, skip_missing_alt: bool = True
 ) -> ad.AnnData:
     """
     Load a VCF file into an AnnData object.
@@ -49,11 +45,11 @@ def load_vcf(
     --------
     >>> import cellspec as spc
     >>> # Load VCF, skipping variants without ALT alleles (default)
-    >>> adata = spc.pp.load_vcf('joint_calls.vcf.gz')
+    >>> adata = spc.pp.load_vcf("joint_calls.vcf.gz")
     >>> print(f"Loaded {adata.n_vars} variants across {adata.n_obs} samples/cells")
     >>>
     >>> # Include variants with missing ALT alleles
-    >>> adata = spc.pp.load_vcf('joint_calls.vcf.gz', skip_missing_alt=False)
+    >>> adata = spc.pp.load_vcf("joint_calls.vcf.gz", skip_missing_alt=False)
 
     Notes
     -----
@@ -118,8 +114,16 @@ def load_vcf(
         variant_ids.append(variant_id)
 
         # Get depths
+        # cyvcf2 uses various sentinel values for missing data:
+        # INT32_MIN (-2147483648), -1, etc.
+        # Replace all negative values with 0 for proper handling of missing depth data
         alt_dp = variant.gt_alt_depths
         ref_dp = variant.gt_ref_depths
+
+        # Replace any negative sentinel values with 0
+        alt_dp = np.where(alt_dp < 0, 0, alt_dp)
+        ref_dp = np.where(ref_dp < 0, 0, ref_dp)
+
         tot_dp = np.add(alt_dp, ref_dp)
 
         # Get genotypes (0=HOM_REF, 1=HET, 2=UNKNOWN, 3=HOM_ALT)
@@ -137,11 +141,13 @@ def load_vcf(
     # Warn about duplicates
     if n_duplicates > 0 and show_progress:
         import warnings
+
         warnings.warn(
             f"Found {n_duplicates} duplicate variant records in VCF (same CHROM-POS-REF>ALT). "
             f"Kept first occurrence of each. Consider deduplicating your VCF with: "
             f"bcftools norm -d exact input.vcf.gz -Oz -o output.vcf.gz",
-            UserWarning
+            UserWarning,
+            stacklevel=2,
         )
 
     variant_ids = np.array(variant_ids)
@@ -169,23 +175,23 @@ def load_vcf(
             print("Converting to sparse format...")
         X = csr_matrix(genotype_mat, dtype=np.float32)
         adata = ad.AnnData(X)
-        adata.layers['DP'] = csr_matrix(depth_mat, dtype=np.float32)
-        adata.layers['AD'] = csr_matrix(alt_mat, dtype=np.float32)
+        adata.layers["DP"] = csr_matrix(depth_mat, dtype=np.float32)
+        adata.layers["AD"] = csr_matrix(alt_mat, dtype=np.float32)
     else:
         # Use dense arrays
         X = genotype_mat
         adata = ad.AnnData(X)
-        adata.layers['DP'] = depth_mat
-        adata.layers['AD'] = alt_mat
+        adata.layers["DP"] = depth_mat
+        adata.layers["AD"] = alt_mat
 
     # Set names
     adata.obs_names = cell_names
     adata.var_names = variant_ids
 
     # Add basic metadata
-    adata.uns['vcf_source'] = vcf_path
-    adata.uns['n_variants'] = n_variants
-    adata.uns['n_cells'] = n_cells
+    adata.uns["vcf_source"] = vcf_path
+    adata.uns["n_variants"] = n_variants
+    adata.uns["n_cells"] = n_cells
 
     if show_progress:
         print(f"Done! Loaded {n_variants} sites × {n_cells} samples")
