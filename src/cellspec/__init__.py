@@ -24,7 +24,6 @@ Example usage:
     # Tools
     spc.tl.compute_spectrum(adata, min_depth=10, key='somatic')
     spc.tl.compute_callable_sites(adata, min_depth=10)
-    spc.tl.compute_rates(adata, spectrum_key='somatic')
 
     # Plotting
     spc.pl.spectrum(adata, key='somatic', aggregate='sum')

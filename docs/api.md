@@ -29,7 +29,6 @@
 
     tl.compute_spectrum
     tl.compute_callable_sites
-    tl.compute_rates
     tl.normalize_spectrum
     tl.private_mutations
 ```

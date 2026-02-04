@@ -16,14 +16,13 @@ Functions for computing mutation spectra, calculating rates, and identifying mut
     tl.normalize_spectrum
 ```
 
-## Mutation rates
+## Normalization
 
 ```{eval-rst}
 .. autosummary::
     :toctree: ../generated
 
     tl.compute_callable_sites
-    tl.compute_rates
 ```
 
 ## Pattern identification
