@@ -10,13 +10,14 @@ import pandas as pd
 from cellspec.utils.sigprofiler_io import (
     cleanup_temp_files,
     parse_cosmic_assignment_results,
-    spectrum_to_sigprofiler_matrix,
 )
 
 
 def fit_cosmic_signatures(
     adata: ad.AnnData,
     key: str = "spectrum",
+    groupby: str | None = None,
+    aggregate: str = "sum",
     cosmic_version: float = 3.5,
     genome_build: str = "GRCh37",
     output_key: str | None = None,
@@ -39,6 +40,13 @@ def fit_cosmic_signatures(
         AnnData object with computed spectrum
     key : str, default 'spectrum'
         Key for spectrum in adata.obsm[f'spectrum_{key}']
+    groupby : str, optional
+        Column name from adata.obs to group samples by (e.g., 'lineage', 'sample_id').
+        If provided, aggregates spectrum within each group before fitting signatures.
+        Recommended for sparse single-cell data.
+    aggregate : str, default 'sum'
+        How to aggregate spectra within groups: 'sum' or 'mean'.
+        Only used if groupby is provided.
     cosmic_version : float, default 3.5
         COSMIC signature version (1, 2, 3, 3.1, 3.2, 3.3, 3.4, 3.5)
     genome_build : str, default 'GRCh37'
@@ -61,28 +69,38 @@ def fit_cosmic_signatures(
     Returns
     -------
     pd.DataFrame or None
-        Signature activities (cells × signatures) if inplace=False
+        Signature activities (samples/groups × signatures) if inplace=False
 
     Stores in adata
     ---------------
-    adata.obsm[f'cosmic_signatures_{output_key}'] : pd.DataFrame
+    adata.obsm[f'cosmic_signatures_{output_key}'] : pd.DataFrame (if groupby=None)
         Signature activities/exposures per cell (cells × COSMIC_signatures)
+
+    adata.uns[f'cosmic_signatures_{output_key}'] : pd.DataFrame (if groupby provided)
+        Signature activities/exposures per group (groups × COSMIC_signatures)
 
     adata.uns[f'cosmic_signatures_{output_key}_reference'] : pd.DataFrame
         Reference COSMIC signature matrix (96 contexts × signatures)
 
     adata.uns[f'cosmic_signatures_{output_key}_metadata'] : dict
-        Metadata including cosmic_version, genome_build, and fit quality
+        Metadata including cosmic_version, genome_build, groupby, and fit quality
 
     Examples
     --------
     >>> import cellspec as spc
-    >>> # Basic usage - fit COSMIC v3.5 signatures
+    >>> # Fit signatures to individual cells (if enough mutations per cell)
     >>> spc.tl.fit_cosmic_signatures(adata, key="somatic")
     >>> print(adata.obsm["cosmic_signatures_somatic_cosmic"])
     >>>
+    >>> # Fit signatures to aggregated groups (recommended for sparse data)
+    >>> spc.tl.fit_cosmic_signatures(adata, key="somatic", groupby="lineage")
+    >>> print(adata.uns["cosmic_signatures_somatic_cosmic"])  # Results per lineage
+    >>>
     >>> # Use C. elegans genome
     >>> spc.tl.fit_cosmic_signatures(adata, key="somatic", genome_build="c_elegans")
+    >>>
+    >>> # Aggregate by sample with mean instead of sum
+    >>> spc.tl.fit_cosmic_signatures(adata, key="somatic", groupby="sample_id", aggregate="mean")
     >>>
     >>> # Use COSMIC v3.4 with custom exclusions
     >>> spc.tl.fit_cosmic_signatures(
@@ -91,10 +109,17 @@ def fit_cosmic_signatures(
 
     Notes
     -----
-    SigProfilerAssignment works best with samples having >50 mutations.
-    For sparse single-cell data, consider:
-    1. Aggregating by lineage/clone using compute_spectrum(groupby='lineage')
-    2. Using private_mutations() to analyze lineage-specific signatures
+    SigProfilerAssignment works best with samples having >50 mutations per sample.
+
+    **For sparse single-cell data (few mutations per cell):**
+    Use the `groupby` parameter to aggregate mutations within groups:
+    - `groupby='lineage'` - Fit signatures to lineage-level aggregates
+    - `groupby='sample_id'` - Fit signatures per sample
+    - `groupby='clone'` - Fit signatures per clone
+
+    **Storage location:**
+    - Without groupby: Results in adata.obsm (per-cell signature activities)
+    - With groupby: Results in adata.uns (per-group signature activities)
 
     The function uses a forward stagewise algorithm with non-negative least
     squares (NNLS) to find the optimal combination of COSMIC signatures.
@@ -112,23 +137,63 @@ def fit_cosmic_signatures(
     if verbose:
         print(f"Fitting COSMIC v{cosmic_version} signatures to spectrum '{key}'...")
 
+    # Get or create spectrum for fitting
+    spectrum_df = adata.obsm[f"spectrum_{key}"]
+
+    # Handle groupby aggregation
+    if groupby is not None:
+        if groupby not in adata.obs.columns:
+            raise ValueError(
+                f"groupby column '{groupby}' not found in adata.obs. Available columns: {list(adata.obs.columns)}"
+            )
+
+        if aggregate not in ["sum", "mean"]:
+            raise ValueError(f"aggregate must be 'sum' or 'mean', got '{aggregate}'")
+
+        if verbose:
+            print(f"Aggregating spectrum by '{groupby}' using {aggregate}...")
+
+        # Aggregate spectrum within groups
+        grouped_spectra = []
+        group_names = []
+        for group_name, group_indices in adata.obs.groupby(groupby).groups.items():
+            # Get cells in this group that are in spectrum_df
+            group_cells = [cell for cell in group_indices if cell in spectrum_df.index]
+            if len(group_cells) > 0:
+                if aggregate == "sum":
+                    group_spectrum = spectrum_df.loc[group_cells, :].sum(axis=0)
+                else:  # mean
+                    group_spectrum = spectrum_df.loc[group_cells, :].mean(axis=0)
+                grouped_spectra.append(group_spectrum)
+                group_names.append(str(group_name))
+
+        # Create aggregated spectrum DataFrame
+        spectrum_df = pd.DataFrame(grouped_spectra, index=group_names)
+
+        if verbose:
+            print(f"Created {len(group_names)} aggregated samples from {len(groupby)} groups")
+
     # Create temporary directories for I/O
     temp_input_dir = tempfile.mkdtemp(prefix="cellspec_sigprofiler_input_")
     temp_output_dir = tempfile.mkdtemp(prefix="cellspec_sigprofiler_output_")
 
     try:
-        # Convert spectrum to SigProfiler format
+        # Write spectrum to temporary file for SigProfiler
         input_matrix_path = os.path.join(temp_input_dir, "matrix.txt")
-        spectrum_to_sigprofiler_matrix(adata, key, input_matrix_path)
+        from cellspec.utils.constants import get_canonical_96_order
+
+        canonical_order = get_canonical_96_order()
+        spectrum_df = spectrum_df[canonical_order].astype(int)
+        spectrum_df.to_csv(input_matrix_path, sep="\t", index=True, index_label="Sample")
 
         if verbose:
             print(f"Converted spectrum to SigProfiler format: {input_matrix_path}")
-            n_samples = adata.obsm[f"spectrum_{key}"].shape[0]
-            total_mutations = adata.obsm[f"spectrum_{key}"].sum().sum()
+            n_samples = spectrum_df.shape[0]
+            total_mutations = spectrum_df.sum().sum()
             print(f"Analyzing {n_samples} samples with {int(total_mutations)} total mutations")
 
         # Check if samples have sufficient mutations
-        sample_mutation_counts = adata.obsm[f"spectrum_{key}"].sum(axis=1)
+        sample_mutation_counts = spectrum_df.sum(axis=1)
         low_mutation_samples = (sample_mutation_counts < 50).sum()
         if low_mutation_samples > 0:
             warnings.warn(
@@ -162,7 +227,7 @@ def fit_cosmic_signatures(
             print("Parsing results...")
 
         # Parse results
-        sample_names = adata.obsm[f"spectrum_{key}"].index.tolist()
+        sample_names = spectrum_df.index.tolist()
         activities_df, signatures_df, metadata = parse_cosmic_assignment_results(temp_output_dir, sample_names)
 
         if verbose:
@@ -171,8 +236,15 @@ def fit_cosmic_signatures(
 
         # Store results in adata
         if inplace:
-            # Store activities (cells × signatures)
-            adata.obsm[f"cosmic_signatures_{output_key}"] = activities_df
+            # Store activities - location depends on whether we grouped
+            if groupby is not None:
+                # Grouped results go in .uns (not per-cell)
+                adata.uns[f"cosmic_signatures_{output_key}"] = activities_df
+                storage_location = f"adata.uns['cosmic_signatures_{output_key}']"
+            else:
+                # Per-cell results go in .obsm
+                adata.obsm[f"cosmic_signatures_{output_key}"] = activities_df
+                storage_location = f"adata.obsm['cosmic_signatures_{output_key}']"
 
             # Store reference signatures if available
             if signatures_df is not None:
@@ -185,6 +257,8 @@ def fit_cosmic_signatures(
                 "genome_build": genome_build,
                 "context_type": context_type,
                 "spectrum_key": key,
+                "groupby": groupby,
+                "aggregate": aggregate if groupby else None,
                 "n_samples": len(sample_names),
                 "n_signatures": activities_df.shape[1],
                 "total_mutations": int(total_mutations),
@@ -193,7 +267,7 @@ def fit_cosmic_signatures(
 
             if verbose:
                 print("Results stored in:")
-                print(f"  - adata.obsm['cosmic_signatures_{output_key}']")
+                print(f"  - {storage_location}")
                 print(f"  - adata.uns['cosmic_signatures_{output_key}_metadata']")
                 if signatures_df is not None:
                     print(f"  - adata.uns['cosmic_signatures_{output_key}_reference']")
