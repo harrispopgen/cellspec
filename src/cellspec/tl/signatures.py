@@ -171,7 +171,8 @@ def fit_cosmic_signatures(
         spectrum_df = pd.DataFrame(grouped_spectra, index=group_names)
 
         if verbose:
-            print(f"Created {len(group_names)} aggregated samples from {len(groupby)} groups")
+            n_unique_groups = adata.obs[groupby].nunique()
+            print(f"Created {len(group_names)} aggregated samples from {n_unique_groups} unique groups")
 
     # Create temporary directories for I/O
     temp_input_dir = tempfile.mkdtemp(prefix="cellspec_sigprofiler_input_")
@@ -183,7 +184,24 @@ def fit_cosmic_signatures(
         from cellspec.utils.constants import get_canonical_96_order
 
         canonical_order = get_canonical_96_order()
+
+        # Validate that spectrum has 96 columns
+        if spectrum_df.shape[1] != 96:
+            raise ValueError(
+                f"Spectrum has {spectrum_df.shape[1]} columns, expected 96 trinucleotide contexts. "
+                f"Ensure the spectrum was computed with trinucleotide context annotation "
+                f"(spc.pp.annotate_contexts()) and filtering to SNPs (spc.pp.filter_to_snps())."
+            )
+
+        # Ensure columns are in canonical order and convert to integers
         spectrum_df = spectrum_df[canonical_order].astype(int)
+
+        # Validate no NaN or negative values
+        if spectrum_df.isna().any().any():
+            raise ValueError("Spectrum contains NaN values. Ensure all mutations have valid trinucleotide contexts.")
+        if (spectrum_df < 0).any().any():
+            raise ValueError("Spectrum contains negative values. Mutation counts must be non-negative.")
+
         spectrum_df.to_csv(input_matrix_path, sep="\t", index=True, index_label="Sample")
 
         if verbose:
@@ -220,6 +238,7 @@ def fit_cosmic_signatures(
             export_probabilities=False,
             make_plots=make_plots,
             sample_reconstruction_plots=False,  # Disable to reduce output
+            collapse_to_SBS96=False,  # We already provide SBS96 format
             verbose=verbose,
         )
 
