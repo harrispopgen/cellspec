@@ -48,11 +48,9 @@ import cellspec as spc
 :width: 500px
 ```
 
-From the `scanpy` docs:
-
 > At the most basic level, an {class}`~anndata.AnnData` object `adata` stores a data matrix `adata.X`, annotation of observations `adata.obs` and variables `adata.var` as `pd.DataFrame` and unstructured annotation `adata.uns` as `dict`. Names of observations and variables can be accessed via `adata.obs_names` and `adata.var_names`, respectively. {class}`~anndata.AnnData` objects can be sliced like dataframes, for example, `adata_subset = adata[:, list_of_gene_names]`.
 
-In **`cellspec`**, observations are cells (or samples), and variables are bi-allelic sites. Genotype calls from the vcf file are stored in `adata.X`, and depth information in `adata.layers`. Total read depth at each site in each observation is stored in `adata.layers["DP"]`, and alternate allele read depth is stored in `adata.layers["AD"]`.
+In **`cellspec`**, observations are cells (or samples), and variables are bi-allelic sites. Genotype calls from the vcf file are stored in `adata.X`, and depth information in `adata.layers`. Total read depth at each site in each cell is stored in `adata.layers["DP"]`, and alternate allele read depth is stored in `adata.layers["AD"]`.
 
 To load a vcf into anndata:
 
