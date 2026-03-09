@@ -13,19 +13,45 @@ from cellspec.utils.sigprofiler_io import (
 )
 
 
+def _calculate_signature_proportions(exposures_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate proportions of each signature from absolute exposures.
+
+    Parameters
+    ----------
+    exposures_df : pd.DataFrame
+        Signature exposures (samples × signatures)
+
+    Returns
+    -------
+    pd.DataFrame
+        Signature proportions (samples × signatures), values sum to 1.0 per sample
+    """
+    # Calculate proportions by dividing each row by its sum
+    proportions = exposures_df.div(exposures_df.sum(axis=1), axis=0)
+    return proportions
+
+
 def fit_cosmic_signatures(
     adata: ad.AnnData,
     key: str = "spectrum",
     groupby: str | None = None,
     aggregate: str = "sum",
-    cosmic_version: float = 3.5,
-    genome_build: str = "GRCh37",
+    cosmic_version: float = 3.4,
+    genome_build: str = "GRCh38",
     output_key: str | None = None,
     output_dir: str | None = None,
     signature_database: str | None = None,
     exclude_signature_subgroups: list[str] | None = None,
-    make_plots: bool = False,
+    make_plots: bool = True,
+    sample_reconstruction_plots: bool = False,
     context_type: str = "96",
+    exome: bool = False,
+    nnls_add_penalty: float = 0.0,
+    nnls_remove_penalty: float = 0.0,
+    initial_remove_penalty: float = 0.0,
+    cpu: int = 1,
+    add_background_signatures: bool = True,
     verbose: bool = True,
     inplace: bool = True,
 ) -> pd.DataFrame | None:
@@ -48,9 +74,9 @@ def fit_cosmic_signatures(
     aggregate : str, default 'sum'
         How to aggregate spectra within groups: 'sum' or 'mean'.
         Only used if groupby is provided.
-    cosmic_version : float, default 3.5
+    cosmic_version : float, default 3.4
         COSMIC signature version (1, 2, 3, 3.1, 3.2, 3.3, 3.4, 3.5)
-    genome_build : str, default 'GRCh37'
+    genome_build : str, default 'GRCh38'
         Reference genome ('GRCh37', 'GRCh38', 'mm9', 'mm10', 'c_elegans', etc.)
     output_key : str, optional
         Key for storing results. If None, uses f'{key}_cosmic'
@@ -62,10 +88,24 @@ def fit_cosmic_signatures(
         Path to custom signature database (TSV file)
     exclude_signature_subgroups : list, optional
         Signature subgroups to exclude (e.g., ['MMR_deficiency_signatures'])
-    make_plots : bool, default False
+    make_plots : bool, default True
         Generate SigProfiler's default plots
+    sample_reconstruction_plots : bool, default False
+        Generate per-sample reconstruction plots
     context_type : str, default '96'
         Mutation context type ('96', '288', '1536', 'DINUC', 'ID')
+    exome : bool, default False
+        Use exome-specific signature database
+    nnls_add_penalty : float, default 0.0
+        Penalty for adding new signatures (0.0 = no penalty)
+    nnls_remove_penalty : float, default 0.0
+        Penalty for removing signatures (0.0 = no penalty)
+    initial_remove_penalty : float, default 0.0
+        Initial penalty for signature removal
+    cpu : int, default 1
+        Number of CPUs to use
+    add_background_signatures : bool, default True
+        Include background signatures in fitting
     verbose : bool, default True
         Print progress messages
     inplace : bool, default True
@@ -78,38 +118,46 @@ def fit_cosmic_signatures(
 
     Stores in adata
     ---------------
-    adata.obsm[f'cosmic_signatures_{output_key}'] : pd.DataFrame (if groupby=None)
-        Signature activities/exposures per cell (cells × COSMIC_signatures)
+    adata.obsm[f'{output_key}_cosmic_fit'] : pd.DataFrame (if groupby=None)
+        Signature exposures per cell (cells × COSMIC_signatures)
 
-    adata.uns[f'cosmic_signatures_{output_key}'] : pd.DataFrame (if groupby provided)
-        Signature activities/exposures per group (groups × COSMIC_signatures)
+    adata.obsm[f'{output_key}_cosmic_fit_proportions'] : pd.DataFrame (if groupby=None)
+        Signature proportions per cell (cells × COSMIC_signatures)
 
-    adata.uns[f'cosmic_signatures_{output_key}_reference'] : pd.DataFrame
-        Reference COSMIC signature matrix (96 contexts × signatures)
+    adata.uns[f'{output_key}_cosmic_fit'] : pd.DataFrame (if groupby provided)
+        Signature exposures per group (groups × COSMIC_signatures)
 
-    adata.uns[f'cosmic_signatures_{output_key}_metadata'] : dict
+    adata.uns[f'{output_key}_cosmic_fit_proportions'] : pd.DataFrame (if groupby provided)
+        Signature proportions per group (groups × COSMIC_signatures)
+
+    adata.uns['cosmic_signatures'] : pd.DataFrame
+        Reference COSMIC signature matrix (signatures × 96 contexts)
+
+    adata.uns[f'{output_key}_cosmic_fit_metadata'] : dict
         Metadata including cosmic_version, genome_build, groupby, and fit quality
 
     Examples
     --------
     >>> import cellspec as spc
     >>> # Fit signatures to individual cells (if enough mutations per cell)
-    >>> spc.tl.fit_cosmic_signatures(adata, key="somatic")
-    >>> print(adata.obsm["cosmic_signatures_somatic_cosmic"])
+    >>> spc.tl.fit_cosmic_signatures(adata, key="spectrum")
+    >>> print(adata.obsm["spectrum_cosmic_fit"])  # Absolute counts
+    >>> print(adata.obsm["spectrum_cosmic_fit_proportions"])  # Proportions
     >>>
     >>> # Fit signatures to aggregated groups (recommended for sparse data)
-    >>> spc.tl.fit_cosmic_signatures(adata, key="somatic", groupby="lineage")
-    >>> print(adata.uns["cosmic_signatures_somatic_cosmic"])  # Results per lineage
+    >>> spc.tl.fit_cosmic_signatures(adata, key="spectrum", groupby="Mutation")
+    >>> print(adata.uns["spectrum_Mutation_cosmic_fit"])  # Counts per Mutation group
+    >>> print(adata.uns["spectrum_Mutation_cosmic_fit_proportions"])  # Proportions
     >>>
     >>> # Use C. elegans genome
-    >>> spc.tl.fit_cosmic_signatures(adata, key="somatic", genome_build="c_elegans")
+    >>> spc.tl.fit_cosmic_signatures(adata, key="spectrum", genome_build="c_elegans")
     >>>
     >>> # Aggregate by sample with mean instead of sum
-    >>> spc.tl.fit_cosmic_signatures(adata, key="somatic", groupby="sample_id", aggregate="mean")
+    >>> spc.tl.fit_cosmic_signatures(adata, key="spectrum", groupby="sample_id", aggregate="mean")
     >>>
     >>> # Use COSMIC v3.4 with custom exclusions
     >>> spc.tl.fit_cosmic_signatures(
-    ...     adata, key="somatic", cosmic_version=3.4, exclude_signature_subgroups=["Possible_sequencing_artifacts"]
+    ...     adata, key="spectrum", cosmic_version=3.4, exclude_signature_subgroups=["Possible_sequencing_artifacts"]
     ... )
 
     Notes
@@ -137,7 +185,11 @@ def fit_cosmic_signatures(
         ) from e
 
     if output_key is None:
-        output_key = f"{key}_cosmic"
+        # Build output key: {key}_{groupby (if provided)}
+        if groupby is not None:
+            output_key = f"{key}_{groupby}"
+        else:
+            output_key = key
 
     if verbose:
         print(f"Fitting COSMIC v{cosmic_version} signatures to spectrum '{key}'...")
@@ -201,12 +253,6 @@ def fit_cosmic_signatures(
             print(f"SigProfiler outputs will be saved to: {output_dir}")
 
     try:
-        # Write spectrum to temporary file for SigProfiler
-        input_matrix_path = os.path.join(temp_input_dir, "matrix.txt")
-        from cellspec.utils.constants import get_canonical_96_order
-
-        canonical_order = get_canonical_96_order()
-
         # Validate that spectrum has 96 columns
         if spectrum_df.shape[1] != 96:
             raise ValueError(
@@ -215,16 +261,26 @@ def fit_cosmic_signatures(
                 f"(spc.pp.annotate_contexts()) and filtering to SNPs (spc.pp.filter_to_snps())."
             )
 
-        # Ensure columns are in canonical order and convert to integers
-        spectrum_df = spectrum_df[canonical_order].astype(int)
-
         # Validate no NaN or negative values
         if spectrum_df.isna().any().any():
             raise ValueError("Spectrum contains NaN values. Ensure all mutations have valid trinucleotide contexts.")
         if (spectrum_df < 0).any().any():
             raise ValueError("Spectrum contains negative values. Mutation counts must be non-negative.")
 
-        spectrum_df.to_csv(input_matrix_path, sep="\t", index=True, index_label="Sample")
+        # Convert spectrum to SigProfiler format (transpose and convert mutation notation)
+        # This creates a temporary AnnData-like structure with the spectrum
+        input_matrix_path = os.path.join(temp_input_dir, "matrix.txt")
+        # Create a temporary minimal AnnData with just the spectrum we need
+        # (handles both grouped and ungrouped cases)
+        import anndata as ad
+
+        from cellspec.utils.sigprofiler_io import spectrum_to_sigprofiler_matrix
+
+        temp_adata = ad.AnnData(obs=pd.DataFrame(index=spectrum_df.index))
+        temp_adata.obsm[f"spectrum_{key}"] = spectrum_df
+
+        # Write matrix in SigProfiler format (96 mutation types × N samples with A[C>A]A notation)
+        spectrum_to_sigprofiler_matrix(temp_adata, key, output_path=input_matrix_path)
 
         if verbose:
             print(f"Converted spectrum to SigProfiler format: {input_matrix_path}")
@@ -257,10 +313,16 @@ def fit_cosmic_signatures(
             genome_build=genome_build,
             signature_database=signature_database,
             exclude_signature_subgroups=exclude_signature_subgroups,
+            exome=exome,
             export_probabilities=False,
             make_plots=make_plots,
-            sample_reconstruction_plots=False,  # Disable to reduce output
+            sample_reconstruction_plots=sample_reconstruction_plots,
             collapse_to_SBS96=False,  # We already provide SBS96 format
+            nnls_add_penalty=nnls_add_penalty,
+            nnls_remove_penalty=nnls_remove_penalty,
+            initial_remove_penalty=initial_remove_penalty,
+            cpu=cpu,
+            add_background_signatures=add_background_signatures,
             verbose=verbose,
         )
 
@@ -275,24 +337,31 @@ def fit_cosmic_signatures(
             n_active_sigs = (activities_df.sum(axis=0) > 0).sum()
             print(f"Found {n_active_sigs} active signatures across {len(sample_names)} samples")
 
+        # Calculate proportions from absolute exposures
+        proportions_df = _calculate_signature_proportions(activities_df)
+
         # Store results in adata
         if inplace:
-            # Store activities - location depends on whether we grouped
+            # Store exposures and proportions - location depends on whether we grouped
             if groupby is not None:
                 # Grouped results go in .uns (not per-cell)
-                adata.uns[f"cosmic_signatures_{output_key}"] = activities_df
-                storage_location = f"adata.uns['cosmic_signatures_{output_key}']"
+                adata.uns[f"{output_key}_cosmic_fit"] = activities_df
+                adata.uns[f"{output_key}_cosmic_fit_proportions"] = proportions_df
+                storage_location = f"adata.uns['{output_key}_cosmic_fit']"
+                proportions_location = f"adata.uns['{output_key}_cosmic_fit_proportions']"
             else:
                 # Per-cell results go in .obsm
-                adata.obsm[f"cosmic_signatures_{output_key}"] = activities_df
-                storage_location = f"adata.obsm['cosmic_signatures_{output_key}']"
+                adata.obsm[f"{output_key}_cosmic_fit"] = activities_df
+                adata.obsm[f"{output_key}_cosmic_fit_proportions"] = proportions_df
+                storage_location = f"adata.obsm['{output_key}_cosmic_fit']"
+                proportions_location = f"adata.obsm['{output_key}_cosmic_fit_proportions']"
 
-            # Store reference signatures if available
+            # Store reference signatures if available (shared across all keys)
             if signatures_df is not None:
-                adata.uns[f"cosmic_signatures_{output_key}_reference"] = signatures_df
+                adata.uns["cosmic_signatures"] = signatures_df
 
             # Store metadata
-            adata.uns[f"cosmic_signatures_{output_key}_metadata"] = {
+            adata.uns[f"{output_key}_cosmic_fit_metadata"] = {
                 "method": "SigProfilerAssignment",
                 "cosmic_version": cosmic_version,
                 "genome_build": genome_build,
@@ -309,9 +378,10 @@ def fit_cosmic_signatures(
             if verbose:
                 print("Results stored in:")
                 print(f"  - {storage_location}")
-                print(f"  - adata.uns['cosmic_signatures_{output_key}_metadata']")
+                print(f"  - {proportions_location}")
+                print(f"  - adata.uns['{output_key}_cosmic_fit_metadata']")
                 if signatures_df is not None:
-                    print(f"  - adata.uns['cosmic_signatures_{output_key}_reference']")
+                    print("  - adata.uns['cosmic_signatures']")
 
             return None
         else:

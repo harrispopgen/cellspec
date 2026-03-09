@@ -157,8 +157,8 @@ def parse_cosmic_assignment_results(
     Parse SigProfilerAssignment cosmic_fit results.
 
     SigProfilerAssignment output structure:
-    - Activities: Contains fitted COSMIC signature profiles (signatures × 96 contexts)
-    - Signatures: Contains reconstructed sample spectra (samples × 96 contexts)
+    - Activities: Contains signature exposures per sample (samples × COSMIC_signatures)
+    - Signatures: Contains reference COSMIC signature profiles (mutation_types × COSMIC_signatures)
     - Solution_Stats: Contains fit quality metrics per sample
 
     Parameters
@@ -171,8 +171,8 @@ def parse_cosmic_assignment_results(
     Returns
     -------
     tuple of (activities_df, cosmic_signatures_df, metadata)
-        - activities_df: Reconstructed sample spectra (samples × 96 contexts) in cellspec format
-        - cosmic_signatures_df: COSMIC signatures found (signatures × 96 contexts) in cellspec format
+        - activities_df: Signature exposures per sample (samples × COSMIC_signatures)
+        - cosmic_signatures_df: COSMIC signature profiles (signatures × 96 contexts) in cellspec format
         - metadata: Dict with fit quality metrics
 
     Raises
@@ -187,8 +187,8 @@ def parse_cosmic_assignment_results(
     # SigProfilerAssignment output structure (as of v1.0+):
     # output/
     #   Assignment_Solution/
-    #     Activities/Assignment_Solution_Activities.txt
-    #     Signatures/Assignment_Solution_Signatures.txt
+    #     Activities/Assignment_Solution_Activities.txt  (samples × signatures exposures)
+    #     Signatures/Assignment_Solution_Signatures.txt  (mutation types × signature profiles)
     #     Solution_Stats/Assignment_Solution_Samples_Stats.txt
 
     assignment_dir = results_path / "Assignment_Solution"
@@ -203,44 +203,37 @@ def parse_cosmic_assignment_results(
             f"Available subdirectories: {[d.name for d in results_path.iterdir() if d.is_dir()]}"
         )
 
-    # Read Signatures file (contains reconstructed sample spectra: samples × 96 contexts)
-    signatures_file = signatures_dir / "Assignment_Solution_Signatures.txt"
-    if not signatures_file.exists():
+    # Read Activities file (contains signature exposures: samples × COSMIC signatures)
+    activities_file = activities_dir / "Assignment_Solution_Activities.txt"
+    if not activities_file.exists():
         # Fallback to searching
-        signatures_files = list(signatures_dir.glob("*Signatures*.txt")) if signatures_dir.exists() else []
-        if not signatures_files:
+        activities_files = list(activities_dir.glob("*Activities*.txt")) if activities_dir.exists() else []
+        if not activities_files:
             raise FileNotFoundError(
-                f"Could not find Assignment_Solution_Signatures.txt in {signatures_dir}. "
-                f"Available files: {[f.name for f in signatures_dir.glob('*.txt')] if signatures_dir.exists() else []}"
+                f"Could not find Assignment_Solution_Activities.txt in {activities_dir}. "
+                f"Available files: {[f.name for f in activities_dir.glob('*.txt')] if activities_dir.exists() else []}"
             )
-        signatures_file = signatures_files[0]
+        activities_file = activities_files[0]
 
-    # Signatures file format: (96 mutation types × N samples)
-    reconstructed_spectra = pd.read_csv(signatures_file, sep="\t", index_col=0)
-
-    # Convert row names (mutation types) from SigProfiler format (A[C>A]A) back to cellspec format (ACA>AAA)
-    cellspec_index = [convert_from_sigprofiler_format(idx) for idx in reconstructed_spectra.index]
-    reconstructed_spectra.index = cellspec_index
-
-    # TRANSPOSE to get (N samples × 96 contexts) format that cellspec uses
-    reconstructed_spectra = reconstructed_spectra.T
+    # Activities file format: samples × COSMIC_signatures (already in correct orientation)
+    signature_exposures = pd.read_csv(activities_file, sep="\t", index_col=0)
 
     # Validate sample names
-    if not set(reconstructed_spectra.index).issubset(set(sample_names)):
-        missing = set(reconstructed_spectra.index) - set(sample_names)
+    if not set(signature_exposures.index).issubset(set(sample_names)):
+        missing = set(signature_exposures.index) - set(sample_names)
         raise ValueError(
-            f"Signatures file contains unexpected sample names: {list(missing)[:5]}. Expected: {sample_names}"
+            f"Activities file contains unexpected sample names: {list(missing)[:5]}. Expected: {sample_names}"
         )
 
-    # Read Activities file (contains COSMIC signature profiles: 96 mutation types × N signatures)
-    activities_file = activities_dir / "Assignment_Solution_Activities.txt"
+    # Read Signatures file (contains reference COSMIC signature profiles: mutation types × signatures)
+    signatures_file = signatures_dir / "Assignment_Solution_Signatures.txt"
     cosmic_signatures_df = None
-    if activities_file.exists():
-        cosmic_signatures_df = pd.read_csv(activities_file, sep="\t", index_col=0)
-        # Convert row names (mutation types) from SigProfiler format back to cellspec format
+    if signatures_file.exists():
+        cosmic_signatures_df = pd.read_csv(signatures_file, sep="\t", index_col=0)
+        # Convert row names (mutation types) from SigProfiler format (A[C>A]A) back to cellspec format (ACA>AAA)
         cellspec_index = [convert_from_sigprofiler_format(idx) for idx in cosmic_signatures_df.index]
         cosmic_signatures_df.index = cellspec_index
-        # Transpose to get (N signatures × 96 contexts) format
+        # Transpose to get (signatures × 96 contexts) format that cellspec uses
         cosmic_signatures_df = cosmic_signatures_df.T
 
     # Look for statistics/metadata
@@ -255,7 +248,7 @@ def parse_cosmic_assignment_results(
         except (FileNotFoundError, pd.errors.ParserError, KeyError, ValueError):
             pass  # Stats file format varies, skip if can't parse
 
-    return reconstructed_spectra, cosmic_signatures_df, metadata
+    return signature_exposures, cosmic_signatures_df, metadata
 
 
 def cleanup_temp_files(file_path: str) -> None:
