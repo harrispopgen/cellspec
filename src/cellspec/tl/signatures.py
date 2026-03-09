@@ -21,6 +21,7 @@ def fit_cosmic_signatures(
     cosmic_version: float = 3.5,
     genome_build: str = "GRCh37",
     output_key: str | None = None,
+    output_dir: str | None = None,
     signature_database: str | None = None,
     exclude_signature_subgroups: list[str] | None = None,
     make_plots: bool = False,
@@ -53,6 +54,10 @@ def fit_cosmic_signatures(
         Reference genome ('GRCh37', 'GRCh38', 'mm9', 'mm10', 'c_elegans', etc.)
     output_key : str, optional
         Key for storing results. If None, uses f'{key}_cosmic'
+    output_dir : str, optional
+        Directory to save SigProfilerAssignment outputs (plots, logs, etc.).
+        If None, uses a temporary directory that is cleaned up after parsing results.
+        If provided, results are preserved for inspection.
     signature_database : str, optional
         Path to custom signature database (TSV file)
     exclude_signature_subgroups : list, optional
@@ -174,9 +179,26 @@ def fit_cosmic_signatures(
             n_unique_groups = adata.obs[groupby].nunique()
             print(f"Created {len(group_names)} aggregated samples from {n_unique_groups} unique groups")
 
-    # Create temporary directories for I/O
-    temp_input_dir = tempfile.mkdtemp(prefix="cellspec_sigprofiler_input_")
-    temp_output_dir = tempfile.mkdtemp(prefix="cellspec_sigprofiler_output_")
+    # Set up input/output directories
+    if output_dir is None:
+        # Use temporary directories that will be cleaned up
+        temp_input_dir = tempfile.mkdtemp(prefix="cellspec_sigprofiler_input_")
+        temp_output_dir = tempfile.mkdtemp(prefix="cellspec_sigprofiler_output_")
+        cleanup_dirs = True
+    else:
+        # User-specified output directory - preserve results
+        from pathlib import Path
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        temp_input_dir = str(output_path / "input")
+        temp_output_dir = str(output_path / "output")
+        Path(temp_input_dir).mkdir(parents=True, exist_ok=True)
+        Path(temp_output_dir).mkdir(parents=True, exist_ok=True)
+        cleanup_dirs = False
+
+        if verbose:
+            print(f"SigProfiler outputs will be saved to: {output_dir}")
 
     try:
         # Write spectrum to temporary file for SigProfiler
@@ -296,6 +318,7 @@ def fit_cosmic_signatures(
             return activities_df
 
     finally:
-        # Clean up temporary files
-        cleanup_temp_files(temp_input_dir)
-        cleanup_temp_files(temp_output_dir)
+        # Clean up temporary files only if not user-specified
+        if cleanup_dirs:
+            cleanup_temp_files(temp_input_dir)
+            cleanup_temp_files(temp_output_dir)

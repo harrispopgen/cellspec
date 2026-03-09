@@ -113,31 +113,36 @@ def parse_cosmic_assignment_results(
     """
     results_path = Path(results_dir)
 
-    # SigProfilerAssignment typically creates subdirectories
-    # Look for common output patterns
+    # SigProfilerAssignment output structure (as of v1.0+):
+    # output/
+    #   Assignment_Solution/
+    #     Activities/Assignment_Solution_Activities.txt
+    #     Signatures/Assignment_Solution_Signatures.txt
+    #     Solution_Stats/Assignment_Solution_Samples_Stats.txt
+
     assignment_dir = results_path / "Assignment_Solution"
+    activities_dir = assignment_dir / "Activities"
+    signatures_dir = assignment_dir / "Signatures"
+    stats_dir = assignment_dir / "Solution_Stats"
 
+    # Check if Assignment_Solution exists
     if not assignment_dir.exists():
-        # Try alternate locations
-        possible_dirs = list(results_path.glob("*Assignment*"))
-        if possible_dirs:
-            assignment_dir = possible_dirs[0]
-        else:
-            raise FileNotFoundError(
-                f"Could not find Assignment results in {results_dir}. "
-                f"Available subdirectories: {[d.name for d in results_path.iterdir() if d.is_dir()]}"
-            )
-
-    # Look for activities file (various naming patterns)
-    activities_files = list(assignment_dir.glob("*Activities*.txt")) + list(assignment_dir.glob("*activities*.txt"))
-
-    if not activities_files:
         raise FileNotFoundError(
-            f"Could not find signature activities file in {assignment_dir}. "
-            f"Available files: {[f.name for f in assignment_dir.glob('*.txt')]}"
+            f"Could not find Assignment_Solution directory in {results_dir}. "
+            f"Available subdirectories: {[d.name for d in results_path.iterdir() if d.is_dir()]}"
         )
 
-    activities_file = activities_files[0]
+    # Look for activities file
+    activities_file = activities_dir / "Assignment_Solution_Activities.txt"
+    if not activities_file.exists():
+        # Fallback to searching
+        activities_files = list(activities_dir.glob("*Activities*.txt")) if activities_dir.exists() else []
+        if not activities_files:
+            raise FileNotFoundError(
+                f"Could not find Assignment_Solution_Activities.txt in {activities_dir}. "
+                f"Available files: {[f.name for f in activities_dir.glob('*.txt')] if activities_dir.exists() else []}"
+            )
+        activities_file = activities_files[0]
 
     # Read activities (samples × signatures)
     activities_df = pd.read_csv(activities_file, sep="\t", index_col=0)
@@ -150,20 +155,22 @@ def parse_cosmic_assignment_results(
         )
 
     # Look for signature reference file
-    signatures_files = list(assignment_dir.glob("*Signatures*.txt")) + list(assignment_dir.glob("*signatures*.txt"))
-
+    signatures_file = signatures_dir / "Assignment_Solution_Signatures.txt"
     signatures_df = None
-    if signatures_files:
-        signatures_file = signatures_files[0]
+    if signatures_file.exists():
         signatures_df = pd.read_csv(signatures_file, sep="\t", index_col=0)
+    elif signatures_dir.exists():
+        # Fallback to searching
+        signatures_files = list(signatures_dir.glob("*Signatures*.txt"))
+        if signatures_files:
+            signatures_df = pd.read_csv(signatures_files[0], sep="\t", index_col=0)
 
     # Look for statistics/metadata
     metadata = {}
-    stats_files = list(assignment_dir.glob("*Statistics*.txt")) + list(assignment_dir.glob("*stats*.txt"))
-
-    if stats_files:
+    stats_file = stats_dir / "Assignment_Solution_Samples_Stats.txt"
+    if stats_file.exists():
         try:
-            stats_df = pd.read_csv(stats_files[0], sep="\t", index_col=0)
+            stats_df = pd.read_csv(stats_file, sep="\t", index_col=0)
             # Store reconstruction metrics if available
             if "Cosine Similarity" in stats_df.columns:
                 metadata["reconstruction_cosine_similarity"] = stats_df["Cosine Similarity"].to_dict()
