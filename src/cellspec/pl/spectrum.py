@@ -64,6 +64,7 @@ def spectrum(
     title: str | None = None,
     ylabel: str | None = None,
     ylim: tuple[float, float] | None = None,
+    transparent: bool = False,
 ) -> None:
     """
     Plot mutation spectra for cells/samples or per-group private mutations.
@@ -115,6 +116,8 @@ def spectrum(
         Y-axis label. If None, uses "Mutation count" or "Proportion" based on normalize parameter
     ylim : tuple of (float, float), optional
         Y-axis limits as (ymin, ymax). If None, automatically calculated from data.
+    transparent : bool, default False
+        Save figure with transparent background (only affects saved files)
 
     Examples
     --------
@@ -214,6 +217,7 @@ def spectrum(
             dpi=dpi,
             ylabel=ylabel,
             ylim=ylim,
+            transparent=transparent,
         )
         return
 
@@ -261,6 +265,7 @@ def spectrum(
             dpi=dpi,
             ylabel=ylabel,
             ylim=ylim,
+            transparent=transparent,
         )
 
     elif aggregate is not None:
@@ -283,6 +288,7 @@ def spectrum(
             dpi=dpi,
             ylabel=ylabel,
             ylim=ylim,
+            transparent=transparent,
         )
 
     else:
@@ -305,6 +311,7 @@ def spectrum(
                 dpi=dpi,
                 ylabel=ylabel,
                 ylim=ylim,
+                transparent=transparent,
             )
 
             if outdir:
@@ -321,6 +328,7 @@ def spectrum_from_df(
     dpi: int = 600,
     ylabel: str | None = None,
     ylim: tuple[float, float] | None = None,
+    transparent: bool = False,
 ) -> None:
     """
     Plot mutation spectrum directly from a DataFrame.
@@ -353,6 +361,8 @@ def spectrum_from_df(
         Y-axis label. If None, uses "Mutation count" or "Proportion" based on normalize
     ylim : tuple of (float, float), optional
         Y-axis limits as (ymin, ymax). If None, automatically calculated from data.
+    transparent : bool, default False
+        Save figure with transparent background (only affects saved files)
 
     Examples
     --------
@@ -390,6 +400,7 @@ def spectrum_from_df(
             dpi=dpi,
             ylabel=ylabel,
             ylim=ylim,
+            transparent=transparent,
         )
         return
 
@@ -431,6 +442,7 @@ def spectrum_from_df(
         dpi=dpi,
         ylabel=ylabel,
         ylim=ylim,
+        transparent=transparent,
     )
 
 
@@ -446,6 +458,7 @@ def compare_spectra(
     title: str | None = None,
     ylabel: str | None = None,
     ylim: tuple[float, float] | None = None,
+    transparent: bool = False,
 ) -> None:
     """
     Compare multiple spectra (e.g., different filtering strategies or conditions).
@@ -480,6 +493,8 @@ def compare_spectra(
         Y-axis label. If None, uses "Mutation count" or "Proportion" based on normalize parameter
     ylim : tuple of (float, float), optional
         Y-axis limits as (ymin, ymax). If None, automatically calculated from data.
+    transparent : bool, default False
+        Save figure with transparent background (only affects saved files)
 
     Examples
     --------
@@ -566,6 +581,7 @@ def compare_spectra(
         dpi=dpi,
         ylabel=ylabel,
         ylim=ylim,
+        transparent=transparent,
     )
 
 
@@ -579,6 +595,7 @@ def _plot_single_spectrum(
     dpi: int = 600,
     ylabel: str | None = None,
     ylim: tuple[float, float] | None = None,
+    transparent: bool = False,
 ) -> None:
     """Plot a single mutation spectrum."""
     if normalize and spectrum.sum() > 0:
@@ -640,7 +657,7 @@ def _plot_single_spectrum(
     plt.tight_layout()
 
     if outpath:
-        plt.savefig(outpath, dpi=dpi, bbox_inches="tight")
+        plt.savefig(outpath, dpi=dpi, bbox_inches="tight", transparent=transparent)
         plt.close()
     else:
         plt.show()
@@ -656,6 +673,7 @@ def _plot_multiple_spectra(
     dpi: int = 600,
     ylabel: str | None = None,
     ylim: tuple[float, float] | None = None,
+    transparent: bool = False,
 ) -> None:
     """Plot multiple spectra for comparison."""
     n_spectra = len(spectra_dict)
@@ -747,7 +765,7 @@ def _plot_multiple_spectra(
     plt.tight_layout()
 
     if outpath:
-        plt.savefig(outpath, dpi=dpi, bbox_inches="tight")
+        plt.savefig(outpath, dpi=dpi, bbox_inches="tight", transparent=transparent)
         plt.close()
     else:
         plt.show()
