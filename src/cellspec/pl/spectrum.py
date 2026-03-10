@@ -1,29 +1,69 @@
 """Plot mutation spectra."""
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-import anndata as ad
-from typing import Optional, Dict, List, Tuple, Union
 import os
 
-from ..utils.constants import MUTATION_TYPES, MUTATION_COLORS, get_canonical_96_order
+import anndata as ad
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from cellspec.utils.constants import MUTATION_COLORS, MUTATION_COLORS_DARK, MUTATION_TYPES
+
+
+def _resolve_palette(palette: str | list[str] | dict[str, str] | None) -> dict[str, str]:
+    """
+    Resolve palette specification to a color dictionary.
+
+    Parameters
+    ----------
+    palette : str, list, dict, or None
+        Palette specification:
+        - None: use default MUTATION_COLORS
+        - 'default': use default MUTATION_COLORS
+        - 'dark': use MUTATION_COLORS_DARK (for dark backgrounds)
+        - list of 6 colors: colors for ['C>A', 'C>G', 'C>T', 'T>A', 'T>C', 'T>G']
+        - dict: mapping mutation types to colors (e.g., {'C>A': '#00BCD4', ...})
+
+    Returns
+    -------
+    dict
+        Mapping from mutation types to hex colors
+    """
+    if palette is None or palette == "default":
+        return MUTATION_COLORS
+    elif palette == "dark":
+        return MUTATION_COLORS_DARK
+    elif isinstance(palette, list):
+        if len(palette) != 6:
+            raise ValueError(f"Palette list must have exactly 6 colors, got {len(palette)}")
+        return dict(zip(MUTATION_TYPES, palette, strict=True))
+    elif isinstance(palette, dict):
+        # Validate all mutation types are present
+        missing = set(MUTATION_TYPES) - set(palette.keys())
+        if missing:
+            raise ValueError(f"Palette dict is missing mutation types: {missing}")
+        return palette
+    else:
+        raise TypeError(
+            f"palette must be None, 'default', 'dark', a list of 6 colors, or a dict mapping mutation types to colors. Got {type(palette)}"
+        )
 
 
 def spectrum(
     adata: ad.AnnData,
     key: str = "spectrum",
-    cells: Optional[List[str]] = None,
-    groupby: Optional[str] = None,
-    aggregate: str = 'sum',
+    cells: list[str] | None = None,
+    groupby: str | None = None,
+    aggregate: str = "sum",
     normalize: bool = False,
-    outdir: Optional[str] = None,
-    figsize: Tuple[int, int] = (24, 6),
+    palette: str | list[str] | dict[str, str] | None = None,
+    outdir: str | None = None,
+    figsize: tuple[int, int] = (24, 6),
     dpi: int = 600,
-    title: Optional[str] = None,
-    ylabel: Optional[str] = None,
-    ylim: Optional[Tuple[float, float]] = None
+    title: str | None = None,
+    ylabel: str | None = None,
+    ylim: tuple[float, float] | None = None,
 ) -> None:
     """
     Plot mutation spectra for cells/samples or per-group private mutations.
@@ -57,6 +97,12 @@ def spectrum(
         Normalize to proportions (sum to 1).
         For advanced normalization (by callable sites, coverage, etc.),
         use spc.tl.normalize_spectrum() first and plot the normalized key.
+    palette : str, list, dict, or None, optional
+        Color palette for mutation types:
+        - None or 'default': use default colors
+        - 'dark': use dark-background compatible colors (C>G as light lavender)
+        - list of 6 colors: colors for ['C>A', 'C>G', 'C>T', 'T>A', 'T>C', 'T>G']
+        - dict: mapping mutation types to colors (e.g., {'C>A': '#00BCD4', ...})
     outdir : str, optional
         Output directory for saving plots
     figsize : tuple, default (24, 6)
@@ -75,36 +121,37 @@ def spectrum(
     >>> import cellspec as spc
     >>> # Per-cell spectra examples:
     >>> # Plot all cells as separate files
-    >>> spc.pl.spectrum(adata, key='somatic', outdir='figures/somatic/')
+    >>> spc.pl.spectrum(adata, key="somatic", outdir="figures/somatic/")
 
     >>> # Plot aggregate spectrum (sum across all cells)
-    >>> spc.pl.spectrum(adata, key='somatic', aggregate='sum')
+    >>> spc.pl.spectrum(adata, key="somatic", aggregate="sum")
 
     >>> # Plot aggregate spectrum (mean across all cells)
-    >>> spc.pl.spectrum(adata, key='somatic', aggregate='mean')
+    >>> spc.pl.spectrum(adata, key="somatic", aggregate="mean")
 
     >>> # Plot spectra grouped by cell type (sum within each group)
-    >>> spc.pl.spectrum(adata, key='somatic', groupby='cell_type')
+    >>> spc.pl.spectrum(adata, key="somatic", groupby="cell_type")
 
     >>> # Plot spectra grouped by sample (mean within each group)
-    >>> spc.pl.spectrum(adata, key='somatic', groupby='sample_id', aggregate='mean')
+    >>> spc.pl.spectrum(adata, key="somatic", groupby="sample_id", aggregate="mean")
 
     >>> # Plot individual cells
-    >>> spc.pl.spectrum(adata, key='somatic', aggregate=None)
+    >>> spc.pl.spectrum(adata, key="somatic", aggregate=None)
 
     >>> # Plot specific cells
-    >>> spc.pl.spectrum(adata, key='somatic', cells=['cell_1', 'cell_2', 'cell_3'], aggregate=None)
+    >>> spc.pl.spectrum(adata, key="somatic", cells=["cell_1", "cell_2", "cell_3"], aggregate=None)
 
     >>> # Pre-normalize by callable sites then plot
-    >>> spc.tl.normalize_spectrum(adata, key='somatic', method='obs_column',
-    ...                           obs_column='callable_sites', output_key='somatic_rate')
-    >>> spc.pl.spectrum(adata, key='somatic_rate', aggregate='sum')
+    >>> spc.tl.normalize_spectrum(
+    ...     adata, key="somatic", method="obs_column", obs_column="callable_sites", output_key="somatic_rate"
+    ... )
+    >>> spc.pl.spectrum(adata, key="somatic_rate", aggregate="sum")
 
     >>> # Per-group spectra examples:
     >>> # Compute and plot private mutation spectra per lineage
-    >>> spc.tl.private_mutations(adata, groupby='lineage', genotypes=[3], store_key='private')
-    >>> spc.tl.compute_spectrum(adata, genotypes=[3], private_key='private', key='private_spectra')
-    >>> spc.pl.spectrum(adata, key='private_spectra')  # Automatically detects per-group mode
+    >>> spc.tl.private_mutations(adata, groupby="lineage", genotypes=[3], store_key="private")
+    >>> spc.tl.compute_spectrum(adata, genotypes=[3], private_key="private", key="private_spectra")
+    >>> spc.pl.spectrum(adata, key="private_spectra")  # Automatically detects per-group mode
 
     Notes
     -----
@@ -127,14 +174,14 @@ def spectrum(
     or custom vectors), use spc.tl.normalize_spectrum() before plotting.
     """
     # Get spectrum - check both obsm (per-cell) and uns (per-group)
-    spectrum_key = f'spectrum_{key}'
-    metadata_key = f'spectrum_{key}_metadata'
+    spectrum_key = f"spectrum_{key}"
+    metadata_key = f"spectrum_{key}_metadata"
 
     # Determine mode by checking metadata
     is_per_group = False
     if metadata_key in adata.uns:
         metadata = adata.uns[metadata_key]
-        is_per_group = metadata.get('mode') == 'per_group'
+        is_per_group = metadata.get("mode") == "per_group"
 
     if is_per_group:
         # Per-group mode: data in adata.uns, shape (96 contexts × groups)
@@ -150,7 +197,7 @@ def spectrum(
             raise ValueError("'cells' parameter cannot be used with per-group spectra")
         if groupby is not None:
             raise ValueError("'groupby' parameter cannot be used with per-group spectra (already grouped)")
-        if aggregate is not None and aggregate != 'sum':
+        if aggregate is not None and aggregate != "sum":
             raise ValueError("'aggregate' parameter must be 'sum' or None for per-group spectra")
 
         # Convert to dict for plotting (spectrum_df is 96 contexts × groups)
@@ -160,20 +207,20 @@ def spectrum(
         _plot_multiple_spectra(
             spectra_dict,
             normalize=normalize,
-            title=title or f"Private Mutation Spectra",
+            palette=palette,
+            title=title or "Private Mutation Spectra",
             outpath=os.path.join(outdir, f"{key}_private.png") if outdir else None,
             figsize=figsize,
             dpi=dpi,
             ylabel=ylabel,
-            ylim=ylim
+            ylim=ylim,
         )
         return
 
     # Per-cell mode: data in adata.obsm, shape (cells × 96 contexts)
     if spectrum_key not in adata.obsm:
         raise ValueError(
-            f"'{spectrum_key}' not found in adata.obsm. "
-            f"Run spc.tl.compute_spectrum(..., key='{key}') first."
+            f"'{spectrum_key}' not found in adata.obsm. Run spc.tl.compute_spectrum(..., key='{key}') first."
         )
 
     spectrum_df = adata.obsm[spectrum_key]
@@ -187,11 +234,10 @@ def spectrum(
         # Group by column in .obs
         if groupby not in adata.obs.columns:
             raise ValueError(
-                f"groupby column '{groupby}' not found in adata.obs. "
-                f"Available columns: {list(adata.obs.columns)}"
+                f"groupby column '{groupby}' not found in adata.obs. Available columns: {list(adata.obs.columns)}"
             )
 
-        if aggregate not in ['sum', 'mean']:
+        if aggregate not in ["sum", "mean"]:
             raise ValueError(f"aggregate must be 'sum' or 'mean' when using groupby, got '{aggregate}'")
 
         spectra_dict = {}
@@ -199,7 +245,7 @@ def spectrum(
             # Get cells in this group that are in spectrum_df
             group_cells = [cell for cell in group_indices if cell in spectrum_df.index]
             if len(group_cells) > 0:
-                if aggregate == 'sum':
+                if aggregate == "sum":
                     spectra_dict[str(group_name)] = spectrum_df.loc[group_cells, :].sum(axis=0)
                 else:  # mean
                     spectra_dict[str(group_name)] = spectrum_df.loc[group_cells, :].mean(axis=0)
@@ -208,19 +254,20 @@ def spectrum(
         _plot_multiple_spectra(
             spectra_dict,
             normalize=normalize,
+            palette=palette,
             title=title or f"Spectra by {groupby}",
             outpath=os.path.join(outdir, f"{key}_by_{groupby}.png") if outdir else None,
             figsize=figsize,
             dpi=dpi,
             ylabel=ylabel,
-            ylim=ylim
+            ylim=ylim,
         )
 
     elif aggregate is not None:
         # Aggregate across all cells
-        if aggregate == 'sum':
+        if aggregate == "sum":
             aggregated = spectrum_df.sum(axis=0)
-        elif aggregate == 'mean':
+        elif aggregate == "mean":
             aggregated = spectrum_df.mean(axis=0)
         else:
             raise ValueError(f"aggregate must be 'sum', 'mean', or None, got '{aggregate}'")
@@ -229,12 +276,13 @@ def spectrum(
         _plot_single_spectrum(
             aggregated,
             normalize=normalize,
+            palette=palette,
             title=title or f"Aggregated Spectrum ({aggregate})",
             outpath=os.path.join(outdir, f"{key}_aggregated.png") if outdir else None,
             figsize=figsize,
             dpi=dpi,
             ylabel=ylabel,
-            ylim=ylim
+            ylim=ylim,
         )
 
     else:
@@ -250,12 +298,13 @@ def spectrum(
             _plot_single_spectrum(
                 cell_spectrum,
                 normalize=normalize,
+                palette=palette,
                 title=cell_title,
                 outpath=outpath,
                 figsize=figsize,
                 dpi=dpi,
                 ylabel=ylabel,
-                ylim=ylim
+                ylim=ylim,
             )
 
             if outdir:
@@ -265,12 +314,13 @@ def spectrum(
 def spectrum_from_df(
     spectrum_df: pd.DataFrame,
     normalize: bool = False,
-    title: Optional[str] = None,
-    outpath: Optional[str] = None,
-    figsize: Optional[Tuple[int, int]] = None,
+    palette: str | list[str] | dict[str, str] | None = None,
+    title: str | None = None,
+    outpath: str | None = None,
+    figsize: tuple[int, int] | None = None,
     dpi: int = 600,
-    ylabel: Optional[str] = None,
-    ylim: Optional[Tuple[float, float]] = None
+    ylabel: str | None = None,
+    ylim: tuple[float, float] | None = None,
 ) -> None:
     """
     Plot mutation spectrum directly from a DataFrame.
@@ -289,6 +339,8 @@ def spectrum_from_df(
         - DataFrame (96 contexts × groups): plots multiple spectra, one row per group
     normalize : bool, default False
         Normalize to proportions (sum to 1)
+    palette : str, list, dict, or None, optional
+        Color palette (see spc.pl.spectrum for details)
     title : str, optional
         Plot title
     outpath : str, optional
@@ -308,16 +360,16 @@ def spectrum_from_df(
     >>> import pandas as pd
     >>>
     >>> # Plot a single spectrum (Series)
-    >>> spectrum = adata.obsm['spectrum_somatic'].sum(axis=0)
-    >>> spc.pl.spectrum_from_df(spectrum, title='Total Somatic Mutations')
+    >>> spectrum = adata.obsm["spectrum_somatic"].sum(axis=0)
+    >>> spc.pl.spectrum_from_df(spectrum, title="Total Somatic Mutations")
     >>>
     >>> # Plot from custom DataFrame (96 contexts × groups)
-    >>> private_spectra = adata.uns['spectrum_private']
-    >>> spc.pl.spectrum_from_df(private_spectra, title='Private Mutations', normalize=True)
+    >>> private_spectra = adata.uns["spectrum_private"]
+    >>> spc.pl.spectrum_from_df(private_spectra, title="Private Mutations", normalize=True)
     >>>
     >>> # Plot from subset of cells (cells × 96 contexts)
-    >>> cell_subset = adata.obsm['spectrum_somatic'].loc[['cell1', 'cell2', 'cell3']]
-    >>> spc.pl.spectrum_from_df(cell_subset, title='Selected Cells')
+    >>> cell_subset = adata.obsm["spectrum_somatic"].loc[["cell1", "cell2", "cell3"]]
+    >>> spc.pl.spectrum_from_df(cell_subset, title="Selected Cells")
 
     Notes
     -----
@@ -331,12 +383,13 @@ def spectrum_from_df(
         _plot_single_spectrum(
             spectrum_df,
             normalize=normalize,
+            palette=palette,
             title=title,
             outpath=outpath,
             figsize=figsize,
             dpi=dpi,
             ylabel=ylabel,
-            ylim=ylim
+            ylim=ylim,
         )
         return
 
@@ -346,9 +399,6 @@ def spectrum_from_df(
 
     # Detect format based on shape
     n_rows, n_cols = spectrum_df.shape
-
-    # Check if it's 96-channel spectrum
-    canonical_contexts = get_canonical_96_order()
 
     # Determine orientation
     if n_cols == 96:
@@ -374,26 +424,28 @@ def spectrum_from_df(
     _plot_multiple_spectra(
         spectra_dict,
         normalize=normalize,
+        palette=palette,
         title=title,
         outpath=outpath,
         figsize=figsize,
         dpi=dpi,
         ylabel=ylabel,
-        ylim=ylim
+        ylim=ylim,
     )
 
 
 def compare_spectra(
     adata: ad.AnnData,
-    keys: List[str],
-    aggregate: str = 'sum',
+    keys: list[str],
+    aggregate: str = "sum",
     normalize: bool = False,
-    outpath: Optional[str] = None,
-    figsize: Optional[Tuple[int, int]] = None,
+    palette: str | list[str] | dict[str, str] | None = None,
+    outpath: str | None = None,
+    figsize: tuple[int, int] | None = None,
     dpi: int = 600,
-    title: Optional[str] = None,
-    ylabel: Optional[str] = None,
-    ylim: Optional[Tuple[float, float]] = None
+    title: str | None = None,
+    ylabel: str | None = None,
+    ylim: tuple[float, float] | None = None,
 ) -> None:
     """
     Compare multiple spectra (e.g., different filtering strategies or conditions).
@@ -414,6 +466,8 @@ def compare_spectra(
         Normalize to proportions.
         For advanced normalization (by callable sites, coverage, etc.),
         use spc.tl.normalize_spectrum() first and pass normalized keys.
+    palette : str, list, dict, or None, optional
+        Color palette (see spc.pl.spectrum for details)
     outpath : str, optional
         Path to save figure
     figsize : tuple, optional
@@ -433,51 +487,49 @@ def compare_spectra(
     >>> # Compare germline vs somatic (per-cell spectra)
     >>> spc.pl.compare_spectra(
     ...     adata,
-    ...     keys=['germline', 'somatic'],
-    ...     aggregate='sum',
+    ...     keys=["germline", "somatic"],
+    ...     aggregate="sum",
     ...     normalize=True,
-    ...     title='Germline vs Somatic',
-    ...     outpath='figures/comparison.png'
+    ...     title="Germline vs Somatic",
+    ...     outpath="figures/comparison.png",
     ... )
     >>>
     >>> # Compare with rate normalization
-    >>> spc.tl.normalize_spectrum(adata, key='germline', method='obs_column',
-    ...                           obs_column='callable_sites', output_key='germline_rate')
-    >>> spc.tl.normalize_spectrum(adata, key='somatic', method='obs_column',
-    ...                           obs_column='callable_sites', output_key='somatic_rate')
+    >>> spc.tl.normalize_spectrum(
+    ...     adata, key="germline", method="obs_column", obs_column="callable_sites", output_key="germline_rate"
+    ... )
+    >>> spc.tl.normalize_spectrum(
+    ...     adata, key="somatic", method="obs_column", obs_column="callable_sites", output_key="somatic_rate"
+    ... )
     >>> spc.pl.compare_spectra(
     ...     adata,
-    ...     keys=['germline_rate', 'somatic_rate'],
-    ...     aggregate='sum',
-    ...     title='Germline vs Somatic (per callable site)'
+    ...     keys=["germline_rate", "somatic_rate"],
+    ...     aggregate="sum",
+    ...     title="Germline vs Somatic (per callable site)",
     ... )
     >>>
     >>> # Compare per-group private mutation spectra
     >>> # If 'private_spectra' has 3 groups, this will show all 3 in one plot
-    >>> spc.pl.compare_spectra(
-    ...     adata,
-    ...     keys=['private_spectra'],
-    ...     title='Private Mutations by Lineage'
-    ... )
+    >>> spc.pl.compare_spectra(adata, keys=["private_spectra"], title="Private Mutations by Lineage")
     """
     # Collect spectra
     spectra_dict = {}
     for key in keys:
-        spectrum_key = f'spectrum_{key}'
-        metadata_key = f'spectrum_{key}_metadata'
+        spectrum_key = f"spectrum_{key}"
+        metadata_key = f"spectrum_{key}_metadata"
 
         # Check if per-group mode
         is_per_group = False
         if metadata_key in adata.uns:
             metadata = adata.uns[metadata_key]
-            is_per_group = metadata.get('mode') == 'per_group'
+            is_per_group = metadata.get("mode") == "per_group"
 
         if is_per_group:
             # Per-group mode: data in adata.uns
             if spectrum_key not in adata.uns:
                 raise ValueError(f"'{spectrum_key}' not found in adata.uns")
 
-            if aggregate != 'sum':
+            if aggregate != "sum":
                 raise ValueError(
                     f"For per-group spectrum '{key}', aggregate must be 'sum' (data is already aggregated)"
                 )
@@ -496,9 +548,9 @@ def compare_spectra(
             spectrum_df = adata.obsm[spectrum_key]
 
             # Aggregate
-            if aggregate == 'sum':
+            if aggregate == "sum":
                 spectra_dict[key] = spectrum_df.sum(axis=0)
-            elif aggregate == 'mean':
+            elif aggregate == "mean":
                 spectra_dict[key] = spectrum_df.mean(axis=0)
             else:
                 raise ValueError(f"Invalid aggregate '{aggregate}'. Must be 'sum' or 'mean'.")
@@ -507,24 +559,26 @@ def compare_spectra(
     _plot_multiple_spectra(
         spectra_dict,
         normalize=normalize,
+        palette=palette,
         title=title or "Spectrum Comparison",
         outpath=outpath,
         figsize=figsize,
         dpi=dpi,
         ylabel=ylabel,
-        ylim=ylim
+        ylim=ylim,
     )
 
 
 def _plot_single_spectrum(
     spectrum: pd.Series,
     normalize: bool = False,
-    title: Optional[str] = None,
-    outpath: Optional[str] = None,
-    figsize: Tuple[int, int] = (24, 6),
+    palette: str | list[str] | dict[str, str] | None = None,
+    title: str | None = None,
+    outpath: str | None = None,
+    figsize: tuple[int, int] = (24, 6),
     dpi: int = 600,
-    ylabel: Optional[str] = None,
-    ylim: Optional[Tuple[float, float]] = None
+    ylabel: str | None = None,
+    ylim: tuple[float, float] | None = None,
 ) -> None:
     """Plot a single mutation spectrum."""
     if normalize and spectrum.sum() > 0:
@@ -533,10 +587,11 @@ def _plot_single_spectrum(
     # Create figure
     fig, axes = plt.subplots(1, 6, figsize=figsize, sharey=True)
     if title:
-        fig.suptitle(title, fontsize=20, fontweight='bold')
+        fig.suptitle(title, fontsize=20, fontweight="bold")
 
     # Get colors
-    colors = [MUTATION_COLORS[t] for t in MUTATION_TYPES]
+    color_map = _resolve_palette(palette)
+    colors = [color_map[t] for t in MUTATION_TYPES]
 
     # Calculate y-axis limits
     if ylim is not None:
@@ -561,23 +616,22 @@ def _plot_single_spectrum(
 
         # Plot bars
         x_pos = np.arange(len(contexts))
-        ax.bar(x_pos, counts, color=colors[col], width=0.8, edgecolor='none')
+        ax.bar(x_pos, counts, color=colors[col], width=0.8, edgecolor="none")
 
         # Add colored background patch
         rect = patches.Rectangle(
-            (0, y_max * 0.98), len(contexts), y_max * 0.02,
-            linewidth=0, edgecolor='none', facecolor=colors[col]
+            (0, y_max * 0.98), len(contexts), y_max * 0.02, linewidth=0, edgecolor="none", facecolor=colors[col]
         )
         ax.add_patch(rect)
 
         # Style
         ax.set_xlim(-0.5, len(contexts) - 0.5)
         ax.set_ylim(y_min, y_max)
-        ax.set_title(mut_type, fontweight='bold', fontsize=16)
+        ax.set_title(mut_type, fontweight="bold", fontsize=16)
         ax.set_xticks(x_pos)
         ax.set_xticklabels([c[0:3] for c in contexts], rotation=90, fontsize=8)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
 
         # Y-label only on first subplot
         if col == 0:
@@ -586,21 +640,22 @@ def _plot_single_spectrum(
     plt.tight_layout()
 
     if outpath:
-        plt.savefig(outpath, dpi=dpi, bbox_inches='tight')
+        plt.savefig(outpath, dpi=dpi, bbox_inches="tight")
         plt.close()
     else:
         plt.show()
 
 
 def _plot_multiple_spectra(
-    spectra_dict: Dict[str, pd.Series],
+    spectra_dict: dict[str, pd.Series],
     normalize: bool = False,
-    title: Optional[str] = None,
-    outpath: Optional[str] = None,
-    figsize: Optional[Tuple[int, int]] = None,
+    palette: str | list[str] | dict[str, str] | None = None,
+    title: str | None = None,
+    outpath: str | None = None,
+    figsize: tuple[int, int] | None = None,
     dpi: int = 600,
-    ylabel: Optional[str] = None,
-    ylim: Optional[Tuple[float, float]] = None
+    ylabel: str | None = None,
+    ylim: tuple[float, float] | None = None,
 ) -> None:
     """Plot multiple spectra for comparison."""
     n_spectra = len(spectra_dict)
@@ -608,16 +663,17 @@ def _plot_multiple_spectra(
     if figsize is None:
         figsize = (24, 6 * n_spectra)
 
-    fig, axes = plt.subplots(n_spectra, 6, figsize=figsize, sharey='row')
+    fig, axes = plt.subplots(n_spectra, 6, figsize=figsize, sharey="row")
     if title:
-        fig.suptitle(title, fontsize=20, fontweight='bold', y=0.995)
+        fig.suptitle(title, fontsize=20, fontweight="bold", y=0.995)
 
     # Handle single spectrum case
     if n_spectra == 1:
         axes = axes.reshape(1, -1)
 
     # Get colors
-    colors = [MUTATION_COLORS[t] for t in MUTATION_TYPES]
+    color_map = _resolve_palette(palette)
+    colors = [color_map[t] for t in MUTATION_TYPES]
 
     # Calculate global y-limits
     if ylim is not None:
@@ -651,12 +707,11 @@ def _plot_multiple_spectra(
 
             # Plot bars
             x_pos = np.arange(len(contexts))
-            ax.bar(x_pos, counts, color=colors[col], width=0.8, edgecolor='none')
+            ax.bar(x_pos, counts, color=colors[col], width=0.8, edgecolor="none")
 
             # Add colored background patch
             rect = patches.Rectangle(
-                (0, y_max * 0.98), len(contexts), y_max * 0.02,
-                linewidth=0, edgecolor='none', facecolor=colors[col]
+                (0, y_max * 0.98), len(contexts), y_max * 0.02, linewidth=0, edgecolor="none", facecolor=colors[col]
             )
             ax.add_patch(rect)
 
@@ -667,15 +722,23 @@ def _plot_multiple_spectra(
             # Add spectrum name as title on first subplot of each row
             if col == 0:
                 # Add sample/group name above the leftmost subplot
-                ax.text(-0.15, 1.15, spectrum_name, transform=ax.transAxes,
-                       fontsize=16, fontweight='bold', va='center', ha='right')
+                ax.text(
+                    -0.15,
+                    1.15,
+                    spectrum_name,
+                    transform=ax.transAxes,
+                    fontsize=16,
+                    fontweight="bold",
+                    va="center",
+                    ha="right",
+                )
 
             # Mutation type as title (smaller for multi-row plots)
-            ax.set_title(mut_type, fontweight='bold', fontsize=14)
+            ax.set_title(mut_type, fontweight="bold", fontsize=14)
             ax.set_xticks(x_pos)
             ax.set_xticklabels([c[0:3] for c in contexts], rotation=90, fontsize=6)
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
 
             # Y-label only on first column
             if col == 0:
@@ -684,7 +747,7 @@ def _plot_multiple_spectra(
     plt.tight_layout()
 
     if outpath:
-        plt.savefig(outpath, dpi=dpi, bbox_inches='tight')
+        plt.savefig(outpath, dpi=dpi, bbox_inches="tight")
         plt.close()
     else:
         plt.show()

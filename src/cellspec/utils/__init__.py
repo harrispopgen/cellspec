@@ -1,6 +1,6 @@
 """Utility functions and constants for cellspec."""
 
-from .constants import MUTATION_COLORS, MUTATION_TYPES, TRINUC_CONTEXTS, get_canonical_96_order
+from .constants import MUTATION_COLORS, MUTATION_COLORS_DARK, MUTATION_TYPES, TRINUC_CONTEXTS, get_canonical_96_order
 from .context import (
     classify_mutation_type,
     compute_vaf,
@@ -13,6 +13,7 @@ from .sigprofiler_io import cleanup_temp_files, parse_cosmic_assignment_results,
 __all__ = [
     "MUTATION_TYPES",
     "MUTATION_COLORS",
+    "MUTATION_COLORS_DARK",
     "TRINUC_CONTEXTS",
     "get_canonical_96_order",
     "reverse_complement",

@@ -1,14 +1,23 @@
 """Constants used throughout cellspec."""
 
-MUTATION_TYPES = ['C>A', 'C>G', 'C>T', 'T>A', 'T>C', 'T>G']
+MUTATION_TYPES = ["C>A", "C>G", "C>T", "T>A", "T>C", "T>G"]
 
 MUTATION_COLORS = {
-    'C>A': '#00BCD4',  # Cyan
-    'C>G': '#111111',  # Black
-    'C>T': '#E62725',  # Red
-    'T>A': '#D3D3D3',  # Light gray
-    'T>C': '#99CC00',  # Green
-    'T>G': '#FFADBA'   # Pink
+    "C>A": "#00BCD4",  # Cyan
+    "C>G": "#111111",  # Black
+    "C>T": "#E62725",  # Red
+    "T>A": "#D3D3D3",  # Light gray
+    "T>C": "#99CC00",  # Green
+    "T>G": "#FFADBA",  # Pink
+}
+
+MUTATION_COLORS_DARK = {
+    "C>A": "#00BCD4",  # Cyan
+    "C>G": "#F5F0FF",  # Light lavender (replaces black for dark backgrounds)
+    "C>T": "#E62725",  # Red
+    "T>A": "#D3D3D3",  # Light gray
+    "T>C": "#99CC00",  # Green
+    "T>G": "#FFADBA",  # Pink
 }
 
 TRINUC_CONTEXTS = ["A", "C", "G", "T"]
