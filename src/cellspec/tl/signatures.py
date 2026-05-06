@@ -33,7 +33,8 @@ def _calculate_signature_proportions(exposures_df: pd.DataFrame) -> pd.DataFrame
 
 
 def fit_cosmic_signatures(
-    adata: ad.AnnData,
+    adata: ad.AnnData | None = None,
+    spectrum: pd.Series | pd.DataFrame | None = None,
     key: str = "spectrum",
     groupby: str | None = None,
     aggregate: str = "sum",
@@ -63,10 +64,20 @@ def fit_cosmic_signatures(
 
     Parameters
     ----------
-    adata : ad.AnnData
-        AnnData object with computed spectrum
+    adata : ad.AnnData, optional
+        AnnData object with computed spectrum. Required unless `spectrum` is
+        provided. If both are given, `spectrum` is used as input and `adata` is
+        used for storage only (results land in `adata.uns`).
+    spectrum : pd.Series or pd.DataFrame, optional
+        Spectrum to fit directly, bypassing `adata.obsm[f'spectrum_{key}']`.
+        Useful for fitting signatures to aggregated spectra produced by
+        `tl.compute_spectrum_from_mask` or any other ad-hoc 96-channel vector.
+        - pd.Series: treated as a single sample (length 96).
+        - pd.DataFrame: rows are samples, must have 96 columns.
+        Cannot be combined with `groupby` (the spectrum is already aggregated).
     key : str, default 'spectrum'
-        Key for spectrum in adata.obsm[f'spectrum_{key}']
+        Key for spectrum in `adata.obsm[f'spectrum_{key}']` (when reading from
+        adata) and the prefix for output keys.
     groupby : str, optional
         Column name from adata.obs to group samples by (e.g., 'lineage', 'sample_id').
         If provided, aggregates spectrum within each group before fitting signatures.
@@ -159,6 +170,14 @@ def fit_cosmic_signatures(
     >>> spc.tl.fit_cosmic_signatures(
     ...     adata, key="spectrum", cosmic_version=3.4, exclude_signature_subgroups=["Possible_sequencing_artifacts"]
     ... )
+    >>>
+    >>> # Fit a single aggregated spectrum (e.g., from compute_spectrum_from_mask)
+    >>> somatic_spectrum = spc.tl.compute_spectrum_from_mask(adata, "is_somatic")
+    >>> spc.tl.fit_cosmic_signatures(adata, spectrum=somatic_spectrum, key="somatic")
+    >>> adata.uns["somatic_cosmic_fit"]  # results land in .uns
+    >>>
+    >>> # Fit without an AnnData at all - just get the result back
+    >>> activities = spc.tl.fit_cosmic_signatures(spectrum=somatic_spectrum)
 
     Notes
     -----
@@ -171,8 +190,9 @@ def fit_cosmic_signatures(
     - `groupby='clone'` - Fit signatures per clone
 
     **Storage location:**
-    - Without groupby: Results in adata.obsm (per-cell signature activities)
-    - With groupby: Results in adata.uns (per-group signature activities)
+    - Reading from adata.obsm without groupby: results in adata.obsm (per-cell)
+    - With groupby, with `spectrum=`, or with `inplace=False`: results in adata.uns
+      (or returned directly when no adata is provided)
 
     The function uses a forward stagewise algorithm with non-negative least
     squares (NNLS) to find the optimal combination of COSMIC signatures.
@@ -184,6 +204,14 @@ def fit_cosmic_signatures(
             "SigProfilerAssignment is required for signature fitting. Install with: pip install SigProfilerAssignment"
         ) from e
 
+    if adata is None and spectrum is None:
+        raise ValueError("Must provide either `adata` (with a spectrum in .obsm) or `spectrum` directly.")
+    if spectrum is not None and groupby is not None:
+        raise ValueError(
+            "Cannot combine `groupby` with `spectrum`: the provided spectrum is already aggregated. "
+            "Aggregate manually before passing it in if you need group-level fits."
+        )
+
     if output_key is None:
         # Build output key: {key}_{groupby (if provided)}
         if groupby is not None:
@@ -194,8 +222,17 @@ def fit_cosmic_signatures(
     if verbose:
         print(f"Fitting COSMIC v{cosmic_version} signatures to spectrum '{key}'...")
 
-    # Get or create spectrum for fitting
-    spectrum_df = adata.obsm[f"spectrum_{key}"]
+    # Get spectrum for fitting
+    if spectrum is not None:
+        if isinstance(spectrum, pd.Series):
+            sample_name = spectrum.name if spectrum.name is not None else "spectrum"
+            spectrum_df = pd.DataFrame([spectrum.values], index=[sample_name], columns=spectrum.index)
+        elif isinstance(spectrum, pd.DataFrame):
+            spectrum_df = spectrum
+        else:
+            raise TypeError(f"`spectrum` must be pd.Series or pd.DataFrame, got {type(spectrum).__name__}")
+    else:
+        spectrum_df = adata.obsm[f"spectrum_{key}"]
 
     # Handle groupby aggregation
     if groupby is not None:
@@ -340,21 +377,22 @@ def fit_cosmic_signatures(
         # Calculate proportions from absolute exposures
         proportions_df = _calculate_signature_proportions(activities_df)
 
-        # Store results in adata
-        if inplace:
-            # Store exposures and proportions - location depends on whether we grouped
-            if groupby is not None:
-                # Grouped results go in .uns (not per-cell)
-                adata.uns[f"{output_key}_cosmic_fit"] = activities_df
-                adata.uns[f"{output_key}_cosmic_fit_proportions"] = proportions_df
-                storage_location = f"adata.uns['{output_key}_cosmic_fit']"
-                proportions_location = f"adata.uns['{output_key}_cosmic_fit_proportions']"
-            else:
-                # Per-cell results go in .obsm
+        # Store results in adata. Per-cell .obsm storage only applies when the
+        # input came from adata.obsm without aggregation; everything else is
+        # already aggregated and lives in .uns.
+        is_per_cell = spectrum is None and groupby is None
+
+        if inplace and adata is not None:
+            if is_per_cell:
                 adata.obsm[f"{output_key}_cosmic_fit"] = activities_df
                 adata.obsm[f"{output_key}_cosmic_fit_proportions"] = proportions_df
                 storage_location = f"adata.obsm['{output_key}_cosmic_fit']"
                 proportions_location = f"adata.obsm['{output_key}_cosmic_fit_proportions']"
+            else:
+                adata.uns[f"{output_key}_cosmic_fit"] = activities_df
+                adata.uns[f"{output_key}_cosmic_fit_proportions"] = proportions_df
+                storage_location = f"adata.uns['{output_key}_cosmic_fit']"
+                proportions_location = f"adata.uns['{output_key}_cosmic_fit_proportions']"
 
             # Store reference signatures if available (shared across all keys)
             if signatures_df is not None:
@@ -367,6 +405,7 @@ def fit_cosmic_signatures(
                 "genome_build": genome_build,
                 "context_type": context_type,
                 "spectrum_key": key,
+                "spectrum_source": "direct" if spectrum is not None else "obsm",
                 "groupby": groupby,
                 "aggregate": aggregate if groupby else None,
                 "n_samples": len(sample_names),
