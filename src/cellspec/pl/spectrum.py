@@ -352,7 +352,9 @@ def spectrum_from_df(
     title : str, optional
         Plot title
     outpath : str, optional
-        Path to save figure
+        Full output path for saving plot (e.g., 'results/spectrum.png').
+        Parent directory will be created if it doesn't exist.
+        If None, plot is displayed but not saved.
     figsize : tuple, optional
         Figure size. If None, auto-calculated based on number of spectra
     dpi : int, default 600
@@ -373,6 +375,9 @@ def spectrum_from_df(
     >>> spectrum = adata.obsm["spectrum_somatic"].sum(axis=0)
     >>> spc.pl.spectrum_from_df(spectrum, title="Total Somatic Mutations")
     >>>
+    >>> # Save plot to a file
+    >>> spc.pl.spectrum_from_df(spectrum, outpath="results/spectrum.png")
+    >>>
     >>> # Plot from custom DataFrame (96 contexts × groups)
     >>> private_spectra = adata.uns["spectrum_private"]
     >>> spc.pl.spectrum_from_df(private_spectra, title="Private Mutations", normalize=True)
@@ -386,6 +391,12 @@ def spectrum_from_df(
     This function automatically detects the DataFrame format and plots accordingly.
     For more control over grouping and aggregation from AnnData objects, use spc.pl.spectrum().
     """
+    # Create parent directory if saving
+    if outpath:
+        parent_dir = os.path.dirname(outpath)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+
     # Handle Series (single spectrum)
     if isinstance(spectrum_df, pd.Series):
         if figsize is None:
@@ -402,6 +413,8 @@ def spectrum_from_df(
             ylim=ylim,
             transparent=transparent,
         )
+        if outpath:
+            print(f"Saved: {outpath}")
         return
 
     # Handle DataFrame
@@ -444,6 +457,8 @@ def spectrum_from_df(
         ylim=ylim,
         transparent=transparent,
     )
+    if outpath:
+        print(f"Saved: {outpath}")
 
 
 def compare_spectra(
