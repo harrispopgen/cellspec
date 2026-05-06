@@ -3,8 +3,13 @@
 import anndata as ad
 import numpy as np
 from cyvcf2 import VCF
-from scipy.sparse import csr_matrix
+from scipy.sparse import coo_matrix, csr_matrix, vstack
 from tqdm import tqdm
+
+# Variants per CSR chunk during sparse build. Bounds peak buffer memory at
+# roughly chunk_size * n_cells * 8 bytes for the COO triples before each
+# flush; tune up for higher density data, down for very wide cohorts.
+_CHUNK_SIZE = 50_000
 
 
 def load_vcf(
@@ -15,7 +20,7 @@ def load_vcf(
 
     This function converts a joint-called VCF (bulk or single-cell) into an AnnData object
     with sparse matrices for memory efficiency. The resulting object has:
-    - .X: Genotype calls (0=HOM_REF, 1=HET, 2=UNKNOWN, 3=HOM_ALT)
+    - .X: Genotype calls (0=HOM_REF or missing, 1=HET, 3=HOM_ALT)
     - .layers['DP']: Total depth per variant per sample/cell
     - .layers['AD']: Alternate allele depth per variant per sample/cell
     - .var_names: Variant IDs in format 'chr-pos-ref>alt' (pos is 1-based, matching VCF)
@@ -33,7 +38,9 @@ def load_vcf(
     show_progress : bool, default True
         Show progress bar during loading
     sparse : bool, default True
-        Use sparse matrices (recommended for single-cell scale data)
+        Use sparse matrices (recommended for single-cell scale data). When True,
+        matrices are built incrementally in CSR chunks so peak memory scales with
+        the number of nonzero entries rather than (n_cells × n_variants).
     skip_missing_alt : bool, default True
         Skip variants with missing ALT alleles (represented as "." in VCF).
         If False, these variants are included with "." as the ALT allele.
@@ -55,15 +62,21 @@ def load_vcf(
 
     Notes
     -----
-    For large single-cell datasets (>100 cells), sparse=True is highly recommended
-    to reduce memory usage. Most variants are not present in most cells, so the
-    data is naturally sparse.
+    For large single-cell datasets, sparse=True (the default) is required at
+    realistic joint-VCF scale. Memory usage is then O(nnz) — proportional to
+    the actual number of called (cell, variant) entries rather than the dense
+    matrix size — making the in-memory footprint comparable to (and often
+    smaller than) the source VCF.gz on disk.
 
     Genotype encoding in .X:
-    - 0: HOM_REF (0/0)
+    - 0: HOM_REF *or* missing (use ``layers['DP'] > 0`` to distinguish)
     - 1: HET (0/1)
-    - 2: UNKNOWN (./.)
     - 3: HOM_ALT (1/1)
+
+    UNKNOWN VCF calls (``./.``) and sites with no read coverage are treated as
+    missing: their entries in .X, .layers['DP'], and .layers['AD'] are all 0.
+    To identify the cells/sites where a real call was made, mask on
+    ``adata.layers['DP'] > 0``.
 
     Variant positions use 1-based indexing matching VCF format (POS field).
 
@@ -75,41 +88,67 @@ def load_vcf(
     first occurrence is kept. This can happen when merging VCFs or from
     overlapping variant calls. Use bcftools norm -d exact to deduplicate VCFs.
     """
-    # Load VCF
     vcf = VCF(vcf_path)
 
-    # Get sample/cell names
     cell_names = np.array(vcf.samples)
     n_cells = len(cell_names)
 
-    # Stream through VCF once, filtering and processing as we go
     variant_ids = []
     chroms = []
     positions = []
-    depth_data = []
-    alt_data = []
-    genotype_data = []
     n_skipped = 0
     n_duplicates = 0
     seen_variants = set()
 
-    # Use tqdm without total for indeterminate progress bar
+    # Sparse path: COO triples per layer, flushed to CSR chunks every
+    # _CHUNK_SIZE variants. Avoids materializing dense (variants × cells)
+    # intermediates that OOM at single-cell joint-VCF scale.
+    dp_rows, dp_cols, dp_vals = [], [], []
+    ad_rows, ad_cols, ad_vals = [], [], []
+    x_rows, x_cols, x_vals = [], [], []
+    dp_chunks, ad_chunks, x_chunks = [], [], []
+    local_idx = 0
+
+    # Dense path: per-variant arrays, stacked at end (small bulk-VCF use case).
+    depth_data = []
+    alt_data = []
+    genotype_data = []
+
+    def flush_chunk(n_rows):
+        """Build CSR chunk from current COO buffers and reset them."""
+        if n_rows == 0:
+            return
+        for rows, cols, vals, chunks in (
+            (dp_rows, dp_cols, dp_vals, dp_chunks),
+            (ad_rows, ad_cols, ad_vals, ad_chunks),
+            (x_rows, x_cols, x_vals, x_chunks),
+        ):
+            if rows:
+                r = np.concatenate(rows)
+                c = np.concatenate(cols)
+                v = np.concatenate(vals)
+            else:
+                r = np.array([], dtype=np.int32)
+                c = np.array([], dtype=np.int32)
+                v = np.array([], dtype=np.float32)
+            m = coo_matrix((v, (r, c)), shape=(n_rows, n_cells), dtype=np.float32).tocsr()
+            chunks.append(m)
+            rows.clear()
+            cols.clear()
+            vals.clear()
+
     iterator = tqdm(vcf, desc="Loading VCF", unit=" sites") if show_progress else vcf
 
     for variant in iterator:
-        # Check if ALT allele exists
         has_alt = variant.ALT and len(variant.ALT) > 0
 
-        # Skip if missing ALT and user wants to skip these
         if skip_missing_alt and not has_alt:
             n_skipped += 1
             continue
 
-        # Create variant ID using POS (1-based, matching VCF)
         alt_allele = variant.ALT[0] if has_alt else "."
         variant_id = f"{variant.CHROM}-{variant.POS}-{variant.REF}>{alt_allele}"
 
-        # Check for duplicates (keep first occurrence)
         if variant_id in seen_variants:
             n_duplicates += 1
             continue
@@ -119,32 +158,63 @@ def load_vcf(
         chroms.append(variant.CHROM)
         positions.append(variant.POS)
 
-        # Get depths
-        # cyvcf2 uses various sentinel values for missing data:
-        # INT32_MIN (-2147483648), -1, etc.
-        # Replace all negative values with 0 for proper handling of missing depth data
+        # cyvcf2 uses various sentinel values for missing data (INT32_MIN, -1).
+        # Replace any negative values with 0.
         alt_dp = variant.gt_alt_depths
         ref_dp = variant.gt_ref_depths
-
-        # Replace any negative sentinel values with 0
         alt_dp = np.where(alt_dp < 0, 0, alt_dp)
         ref_dp = np.where(ref_dp < 0, 0, ref_dp)
+        tot_dp = alt_dp + ref_dp
+        gt = np.asarray(variant.gt_types)  # 0=HOM_REF, 1=HET, 2=UNKNOWN, 3=HOM_ALT
 
-        tot_dp = np.add(alt_dp, ref_dp)
+        # Treat UNKNOWN (./.) calls as missing across all layers.
+        is_called = gt != 2
 
-        # Get genotypes (0=HOM_REF, 1=HET, 2=UNKNOWN, 3=HOM_ALT)
-        genotypes = variant.gt_types
+        if sparse:
+            # DP: nonzero total depth at called sites
+            nz = np.flatnonzero((tot_dp > 0) & is_called)
+            if nz.size:
+                dp_rows.append(np.full(nz.size, local_idx, dtype=np.int32))
+                dp_cols.append(nz.astype(np.int32, copy=False))
+                dp_vals.append(tot_dp[nz].astype(np.float32, copy=False))
 
-        # Collect data
-        depth_data.append(tot_dp)
-        alt_data.append(alt_dp)
-        genotype_data.append(genotypes.astype(np.float32))
+            # AD: nonzero alt-allele depth at called sites
+            nz = np.flatnonzero((alt_dp > 0) & is_called)
+            if nz.size:
+                ad_rows.append(np.full(nz.size, local_idx, dtype=np.int32))
+                ad_cols.append(nz.astype(np.int32, copy=False))
+                ad_vals.append(alt_dp[nz].astype(np.float32, copy=False))
 
-    # Report filtering if variants were skipped
+            # X: store HET (1) and HOM_ALT (3) only. HOM_REF (0) collapses to
+            # the sparse default; UNKNOWN (2) is dropped on purpose so .X==0
+            # consistently means "HOM_REF or missing."
+            nz = np.flatnonzero((gt == 1) | (gt == 3))
+            if nz.size:
+                x_rows.append(np.full(nz.size, local_idx, dtype=np.int32))
+                x_cols.append(nz.astype(np.int32, copy=False))
+                x_vals.append(gt[nz].astype(np.float32, copy=False))
+
+            local_idx += 1
+            if local_idx >= _CHUNK_SIZE:
+                flush_chunk(local_idx)
+                local_idx = 0
+        else:
+            # Dense path: mask UNKNOWN entries to 0 in all layers; restrict
+            # X to HET/HOM_ALT so semantics match the sparse path.
+            tot_dp_masked = np.where(is_called, tot_dp, 0).astype(np.float32, copy=False)
+            alt_dp_masked = np.where(is_called, alt_dp, 0).astype(np.float32, copy=False)
+            gt_x = np.where((gt == 1) | (gt == 3), gt, 0).astype(np.float32, copy=False)
+            depth_data.append(tot_dp_masked)
+            alt_data.append(alt_dp_masked)
+            genotype_data.append(gt_x)
+
+    if sparse:
+        flush_chunk(local_idx)
+        local_idx = 0
+
     if skip_missing_alt and n_skipped > 0 and show_progress:
         print(f"Skipped {n_skipped} sites with missing ALT alleles")
 
-    # Warn about duplicates
     if n_duplicates > 0 and show_progress:
         import warnings
 
@@ -159,7 +229,6 @@ def load_vcf(
     variant_ids = np.array(variant_ids)
     n_variants = len(variant_ids)
 
-    # Check if any variants were loaded
     if n_variants == 0:
         raise ValueError(
             f"No variants loaded from {vcf_path}. "
@@ -167,38 +236,35 @@ def load_vcf(
             "Check your VCF file or set skip_missing_alt=False."
         )
 
-    # Create AnnData object
-    # Stack data (variants × cells) and transpose to (cells × variants)
     if show_progress:
         print(f"Building matrices for {n_variants} sites × {n_cells} samples...")
-    genotype_mat = np.stack(genotype_data).T
-    depth_mat = np.stack(depth_data).T
-    alt_mat = np.stack(alt_data).T
 
     if sparse:
-        # Convert to sparse matrices
-        if show_progress:
-            print("Converting to sparse format...")
-        X = csr_matrix(genotype_mat, dtype=np.float32)
-        adata = ad.AnnData(X)
-        adata.layers["DP"] = csr_matrix(depth_mat, dtype=np.float32)
-        adata.layers["AD"] = csr_matrix(alt_mat, dtype=np.float32)
-    else:
-        # Use dense arrays
-        X = genotype_mat
-        adata = ad.AnnData(X)
-        adata.layers["DP"] = depth_mat
-        adata.layers["AD"] = alt_mat
+        # Each chunk has shape (chunk_variants, n_cells); vstack and transpose
+        # to the AnnData convention (n_cells, n_variants).
+        def _combine(chunks):
+            if not chunks:
+                return csr_matrix((n_cells, 0), dtype=np.float32)
+            return vstack(chunks, format="csr").T.tocsr()
 
-    # Set names
+        X = _combine(x_chunks)
+        DP = _combine(dp_chunks)
+        AD = _combine(ad_chunks)
+    else:
+        X = np.stack(genotype_data).T
+        DP = np.stack(depth_data).T
+        AD = np.stack(alt_data).T
+
+    adata = ad.AnnData(X=X)
+    adata.layers["DP"] = DP
+    adata.layers["AD"] = AD
+
     adata.obs_names = cell_names
     adata.var_names = variant_ids
 
-    # Add genomic position annotations
     adata.var["chrom"] = chroms
     adata.var["pos"] = positions
 
-    # Add basic metadata
     adata.uns["vcf_source"] = vcf_path
     adata.uns["n_variants"] = n_variants
     adata.uns["n_cells"] = n_cells
