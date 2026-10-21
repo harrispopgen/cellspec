@@ -131,45 +131,63 @@ def classify_mutation_type(mut_context: str) -> str:
     return f"{ref_base}>{alt_base}"
 
 
-def compute_vaf(ad: np.ndarray, dp: np.ndarray, target_dp: int = 10) -> np.ndarray:
+def compute_vaf(ad: np.ndarray, dp: np.ndarray, min_dp: int, normalize: bool = False) -> np.ndarray:
     """
-    Compute Variant Allele Frequency with hypergeometric downsampling for coverage normalization.
+    Compute Variant Allele Frequency with an explicit depth floor.
 
-    This function normalizes VAF calculations across sites with unequal coverage by
-    downsampling high-coverage sites to a target depth using hypergeometric sampling.
+    Entries with ``dp < min_dp`` are returned as ``NaN`` — those sites don't
+    have enough coverage to estimate VAF reliably. For entries with
+    ``dp >= min_dp``:
+
+    - ``normalize=False`` (default) returns the raw ``ad / dp``.
+    - ``normalize=True`` hypergeometrically downsamples the alt-depth to
+      ``min_dp`` and returns ``down_ad / min_dp``, making VAFs comparable
+      across sites with heterogeneous coverage.
 
     Parameters
     ----------
     ad : np.ndarray
-        Alternate allele depth (read counts supporting alternate allele)
+        Alternate allele depth (read counts supporting alternate allele).
     dp : np.ndarray
-        Total depth (total read counts)
-    target_dp : int, default 10
-        Target depth for downsampling
+        Total depth (total read counts).
+    min_dp : int
+        Minimum DP floor. Sites with ``dp < min_dp`` return ``NaN``; when
+        ``normalize=True``, this is also the target depth for downsampling.
+    normalize : bool, default False
+        Apply hypergeometric downsampling at ``min_dp`` for valid sites.
 
     Returns
     -------
     np.ndarray
-        Variant allele frequencies (VAF) normalized to target depth
+        VAF per entry, with ``NaN`` for entries that failed the ``min_dp``
+        threshold.
 
     Examples
     --------
     >>> ad = np.array([5, 20, 3])
-    >>> dp = np.array([50, 100, 30])
-    >>> vaf = compute_vaf(ad, dp, target_dp=10)
+    >>> dp = np.array([50, 100, 5])
+    >>> compute_vaf(ad, dp, min_dp=10)  # raw VAF, last → NaN
+    array([0.1 , 0.2 ,  nan], dtype=float32)
+    >>> compute_vaf(ad, dp, min_dp=10, normalize=True)  # downsampled to 10
     """
-    ad = ad.astype(int)
-    dp = dp.astype(int)
+    ad = np.asarray(ad, dtype=int)
+    dp = np.asarray(dp, dtype=int)
 
-    # Create mask for rows that need downsampling
-    needs_downsampling = dp > target_dp
+    vaf = np.full(ad.shape, np.nan, dtype=np.float32)
+    valid = dp >= min_dp
+    if not np.any(valid):
+        return vaf
 
-    # Initialize with original values
-    downsampled_ad = ad.copy()
+    ad_v = ad[valid]
+    dp_v = dp[valid]
 
-    # Only apply hypergeometric to rows that need it
-    if needs_downsampling.any():
-        downsampled_ad[needs_downsampling] = hypergeom.rvs(dp[needs_downsampling], ad[needs_downsampling], target_dp)
+    if normalize:
+        down_ad = ad_v.copy()
+        needs_down = dp_v > min_dp
+        if needs_down.any():
+            down_ad[needs_down] = hypergeom.rvs(dp_v[needs_down], ad_v[needs_down], min_dp)
+        vaf[valid] = down_ad / min_dp
+    else:
+        vaf[valid] = ad_v / dp_v
 
-    downsampled_dp = np.minimum(dp, target_dp)
-    return downsampled_ad / downsampled_dp
+    return vaf

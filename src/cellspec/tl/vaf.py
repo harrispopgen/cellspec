@@ -1,5 +1,7 @@
 """Variant allele frequency calculations."""
 
+import warnings
+
 import anndata as ad
 import numpy as np
 from scipy.sparse import issparse
@@ -8,48 +10,61 @@ from tqdm import tqdm
 from cellspec.utils.context import compute_vaf
 
 
+def _default_min_dp_from_entries(dp_values: np.ndarray) -> int:
+    """25th percentile of nonzero DP entries, floored at 1."""
+    nz = dp_values[dp_values > 0]
+    if nz.size == 0:
+        raise ValueError("Cannot derive default min_dp: all DP entries are zero.")
+    return max(1, int(np.percentile(nz, 25)))
+
+
 def add_vaf_layer(
     adata: ad.AnnData,
-    target_dp: int = 10,
+    min_dp: int | None = None,
+    normalize: bool = False,
+    nan_warn_threshold: float = 0.5,
     show_progress: bool = False,
     inplace: bool = True,
 ) -> ad.AnnData | None:
     """
-    Add VAF (Variant Allele Frequency) layer to AnnData object.
+    Add a per-cell VAF layer to ``adata.layers['VAF']``.
 
-    Computes VAF with hypergeometric downsampling for coverage normalization.
-    Adds 'VAF' layer to adata.layers.
+    Default behavior is **raw** VAF ``= AD / DP`` for (cell, site) entries
+    meeting ``min_dp``, and ``NaN`` for entries below the threshold. Set
+    ``normalize=True`` to apply hypergeometric downsampling at ``min_dp`` for
+    coverage-uniform estimates.
 
     Parameters
     ----------
     adata : ad.AnnData
-        AnnData object with 'AD' and 'DP' layers
-    target_dp : int, default 10
-        Target depth for downsampling
+        AnnData with ``AD`` and ``DP`` layers (from :func:`cellspec.pp.load_vcf`).
+    min_dp : int, optional
+        Minimum DP floor applied per (cell, site) entry. If ``None``, defaults
+        to the 25th percentile of nonzero ``DP`` entries (floored at 1).
+    normalize : bool, default False
+        If True, hypergeometrically downsample alt-depth to ``min_dp`` before
+        dividing. If False, use raw ``AD / DP``.
+    nan_warn_threshold : float, default 0.5
+        If more than this fraction of nonzero-DP entries fail the ``min_dp``
+        threshold (and thus become ``NaN``), a ``UserWarning`` is emitted.
     show_progress : bool, default False
-        Show progress bar (can be slow for large datasets)
+        Show a per-cell progress bar (can be slow for very large datasets).
     inplace : bool, default True
-        Modify adata in place or return copy
+        Modify ``adata`` in place or return a copy.
 
     Returns
     -------
     ad.AnnData or None
-        Modified AnnData (if inplace=False), otherwise None
 
     Examples
     --------
     >>> import cellspec as spc
     >>> adata = spc.pp.load_vcf("variants.vcf.gz")
-    >>> spc.tl.add_vaf_layer(adata, target_dp=10)
-    >>> print(adata.layers["VAF"])
-
-    Notes
-    -----
-    VAF is computed per cell/sample independently. High-coverage sites are
-    downsampled to target_dp using hypergeometric sampling to normalize
-    for coverage differences.
-
-    Requires 'AD' and 'DP' layers in adata.layers.
+    >>> # Raw per-cell VAF with min_dp picked from the 25th percentile
+    >>> spc.tl.add_vaf_layer(adata)
+    >>>
+    >>> # Explicit min_dp with hypergeometric normalization
+    >>> spc.tl.add_vaf_layer(adata, min_dp=20, normalize=True)
     """
     if not inplace:
         adata = adata.copy()
@@ -57,31 +72,42 @@ def add_vaf_layer(
     if "AD" not in adata.layers or "DP" not in adata.layers:
         raise ValueError("AnnData must have 'AD' and 'DP' layers. Run spc.pp.load_vcf() first.")
 
-    # Get AD and DP
-    ad_data = adata.layers["AD"]
-    dp_data = adata.layers["DP"]
+    ad_layer = adata.layers["AD"]
+    dp_layer = adata.layers["DP"]
+    ad_arr = ad_layer.toarray() if issparse(ad_layer) else ad_layer
+    dp_arr = dp_layer.toarray() if issparse(dp_layer) else dp_layer
 
-    # Handle sparse matrices
-    if issparse(ad_data):
-        ad_data = ad_data.toarray()
-    if issparse(dp_data):
-        dp_data = dp_data.toarray()
+    if min_dp is None:
+        min_dp = _default_min_dp_from_entries(dp_arr.ravel())
 
-    # Compute VAF for each cell (column)
     n_cells = adata.n_obs
-    n_vars = adata.n_vars
-
-    vaf_matrix = np.zeros((n_cells, n_vars), dtype=np.float32)
+    vaf_matrix = np.full((n_cells, adata.n_vars), np.nan, dtype=np.float32)
 
     iterator = tqdm(range(n_cells), desc="Computing VAF", unit="cell") if show_progress else range(n_cells)
-
     for cell_idx in iterator:
-        ad_col = ad_data[cell_idx, :]
-        dp_col = dp_data[cell_idx, :]
-        vaf_matrix[cell_idx, :] = compute_vaf(ad_col, dp_col, target_dp=target_dp)
+        vaf_matrix[cell_idx, :] = compute_vaf(
+            ad_arr[cell_idx, :], dp_arr[cell_idx, :], min_dp=min_dp, normalize=normalize
+        )
 
-    # Add to layers (keep as dense for now, can convert to sparse if needed)
     adata.layers["VAF"] = vaf_matrix
+    adata.uns["vaf_metadata"] = {"min_dp": int(min_dp), "normalize": bool(normalize)}
+
+    # Warn if many entries failed the min_dp floor. We measure the fail-rate
+    # over "callable attempts" (DP > 0) so that layer sparsity doesn't
+    # dominate the signal.
+    callable_entries = dp_arr > 0
+    n_callable = int(callable_entries.sum())
+    if n_callable > 0:
+        n_below = int(((dp_arr > 0) & (dp_arr < min_dp)).sum())
+        failed_fraction = n_below / n_callable
+        if failed_fraction > nan_warn_threshold:
+            warnings.warn(
+                f"{failed_fraction:.1%} of (cell, site) entries with DP > 0 fell below "
+                f"min_dp={min_dp} and were set to NaN. Consider lowering min_dp or "
+                f"pre-filtering sites with spc.tl.filter_sites(min_bulk_dp=...).",
+                UserWarning,
+                stacklevel=2,
+            )
 
     if not inplace:
         return adata
@@ -89,50 +115,45 @@ def add_vaf_layer(
 
 def compute_bulk_vaf(
     adata: ad.AnnData,
-    target_dp: int | None = None,
+    min_dp: int | None = None,
+    normalize: bool = False,
+    key: str = "bulk_vaf",
     inplace: bool = True,
 ) -> ad.AnnData | None:
     """
-    Compute pseudobulk VAF for each variant across all samples.
+    Compute pseudobulk VAF per site, stored in ``adata.var[key]``.
 
-    Sums AD and DP across all samples to create pseudobulk counts, then computes
-    VAF with hypergeometric downsampling for coverage normalization. Stores result
-    in adata.var['bulk_vaf'].
+    AD and DP are summed across cells; the resulting per-site totals go through
+    :func:`cellspec.utils.compute_vaf` with the same ``min_dp`` / ``normalize``
+    semantics. Sites with bulk DP below ``min_dp`` are stored as ``NaN``.
 
     Parameters
     ----------
     adata : ad.AnnData
-        AnnData object with 'AD' and 'DP' layers
-    target_dp : int, optional
-        Target depth for downsampling. If None (default), uses the minimum
-        total depth across all sites.
+        AnnData with ``AD`` and ``DP`` layers.
+    min_dp : int, optional
+        Minimum bulk DP floor. If ``None``, defaults to the 25th percentile of
+        nonzero per-site bulk DP (floored at 1). If a prior
+        :func:`cellspec.tl.filter_sites` call applied ``min_bulk_dp``, a value
+        of ``min_dp`` below that threshold emits a warning (the filter has
+        already removed the affected sites, so the lower floor is a no-op).
+    normalize : bool, default False
+        Apply hypergeometric downsampling at ``min_dp``.
+    key : str, default 'bulk_vaf'
+        Destination column in ``adata.var``. Use distinct keys (e.g.
+        ``'bulk_vaf_raw'`` and ``'bulk_vaf_norm'``) to store raw and
+        normalized VAFs side-by-side.
     inplace : bool, default True
-        Modify adata in place or return copy
 
     Returns
     -------
     ad.AnnData or None
-        Modified AnnData (if inplace=False), otherwise None
 
     Examples
     --------
     >>> import cellspec as spc
-    >>> adata = spc.pp.load_vcf("variants.vcf.gz")
-    >>> # Use default target_dp (minimum depth across sites)
-    >>> spc.tl.compute_bulk_vaf(adata)
-    >>> print(adata.var["bulk_vaf"])
-    >>>
-    >>> # Use custom target_dp
-    >>> spc.tl.compute_bulk_vaf(adata, target_dp=50)
-
-    Notes
-    -----
-    Pseudobulk VAF is computed by summing AD and DP across all samples for each
-    variant, then applying hypergeometric downsampling to normalize for coverage
-    differences. This is useful for identifying high-confidence variants that
-    are supported across multiple samples.
-
-    Requires 'AD' and 'DP' layers in adata.layers.
+    >>> spc.tl.compute_bulk_vaf(adata, key="bulk_vaf_raw")
+    >>> spc.tl.compute_bulk_vaf(adata, normalize=True, key="bulk_vaf_norm")
     """
     if not inplace:
         adata = adata.copy()
@@ -140,33 +161,38 @@ def compute_bulk_vaf(
     if "AD" not in adata.layers or "DP" not in adata.layers:
         raise ValueError("AnnData must have 'AD' and 'DP' layers. Run spc.pp.load_vcf() first.")
 
-    # Get AD and DP
-    ad_data = adata.layers["AD"]
-    dp_data = adata.layers["DP"]
+    ad_layer = adata.layers["AD"]
+    dp_layer = adata.layers["DP"]
 
-    # Handle sparse matrices - sum along samples (axis=0)
-    if issparse(ad_data):
-        bulk_ad = np.ravel(ad_data.sum(axis=0))
+    if issparse(ad_layer):
+        bulk_ad = np.ravel(ad_layer.sum(axis=0))
     else:
-        bulk_ad = np.sum(ad_data, axis=0)
-
-    if issparse(dp_data):
-        bulk_dp = np.ravel(dp_data.sum(axis=0))
+        bulk_ad = ad_layer.sum(axis=0)
+    if issparse(dp_layer):
+        bulk_dp = np.ravel(dp_layer.sum(axis=0))
     else:
-        bulk_dp = np.sum(dp_data, axis=0)
+        bulk_dp = dp_layer.sum(axis=0)
 
-    # If target_dp not specified, use minimum depth across all sites
-    if target_dp is None:
-        nonzero_depths = bulk_dp[bulk_dp > 0]
-        if nonzero_depths.size == 0:
-            raise ValueError("All sites have zero depth. Cannot compute bulk VAF.")
-        target_dp = int(np.min(nonzero_depths))
+    if min_dp is None:
+        min_dp = _default_min_dp_from_entries(bulk_dp)
 
-    # Compute VAF with hypergeometric downsampling
-    bulk_vaf = compute_vaf(bulk_ad, bulk_dp, target_dp=target_dp)
+    # Warn if min_dp is below a previously-applied filter_sites DP threshold.
+    for applied in adata.uns.get("filter_sites_history", []):
+        prior_floor = applied.get("min_bulk_dp")
+        if prior_floor is not None and min_dp < prior_floor:
+            warnings.warn(
+                f"min_dp={min_dp} is below a previously applied filter_sites "
+                f"threshold min_bulk_dp={prior_floor}. Sites below that floor "
+                f"are already gone, so the lower min_dp has no additional effect.",
+                UserWarning,
+                stacklevel=2,
+            )
+            break
 
-    # Store in adata.var
-    adata.var["bulk_vaf"] = bulk_vaf
+    bulk_vaf = compute_vaf(bulk_ad, bulk_dp, min_dp=min_dp, normalize=normalize)
+
+    adata.var[key] = bulk_vaf
+    adata.uns[f"{key}_metadata"] = {"min_dp": int(min_dp), "normalize": bool(normalize)}
 
     if not inplace:
         return adata
