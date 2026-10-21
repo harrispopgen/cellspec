@@ -12,19 +12,35 @@ and this project adheres to [Semantic Versioning][].
 
 ### Added
 
+- `tl.compute_site_stats`: per-site depth summaries (`dp_total`, `dp_mean`,
+  `dp_median`, `dp_min`, `dp_max`) and carrier frequency / count on
+  `adata.var`. Supersedes the stats paths that lived inside the old
+  `pp.filter_variants` / `pp.filter_by_coverage`.
+- `tl.compute_cell_stats`: per-cell depth summaries (`total_dp`,
+  `mean_dp_per_site`, and `callable_sites` when `min_depth` is given) on
+  `adata.obs`. Replaces `tl.compute_callable_sites`.
+- `tl.filter_sites`: variant-axis filtering from precomputed `.var` columns.
+  Takes keyword thresholds (`min_bulk_dp`, `max_bulk_dp`, `min_mean_dp`,
+  `max_mean_dp`, `min_median_dp`, `max_median_dp`, `min_carrier_freq`,
+  `max_carrier_freq`, `min_carrier_count`, `max_carrier_count`) and errors
+  with a remediation hint if the required column is missing.
+- `tl.filter_cells`: cell-axis filtering from precomputed `.obs` columns
+  (`min_total_dp`/`max_total_dp`, `min_mean_dp_per_site`/`max_mean_dp_per_site`,
+  `min_callable_sites`/`max_callable_sites`).
+- Filter history: every `tl.filter_sites` / `tl.filter_cells` call appends
+  its applied thresholds to `adata.uns['filter_sites_history']` /
+  `['filter_cells_history']`. Downstream functions can read this to detect
+  inconsistent later settings.
 - `tl.fit_cosmic_signatures`: fit COSMIC mutational signatures to spectra via
   SigProfilerAssignment, with optional `groupby` aggregation and direct
   `Series`/`DataFrame` spectrum input.
 - `tl.compute_bulk_vaf`: pseudobulk VAF across samples with hypergeometric
-  downsampling, stored in `adata.var['bulk_vaf']`.
-- `tl.add_vaf_layer`: per-cell VAF layer with coverage-normalized downsampling
-  (moved from `pp` to `tl`).
+  downsampling, stored in `adata.var[key]`.
+- `tl.add_vaf_layer`: per-cell VAF layer (moved from `pp` to `tl`).
 - `tl.compute_spectrum_from_mask`: 96-channel spectrum counts from a boolean
   variant mask or a trinucleotide-context series.
 - Per-group spectrum mode in `tl.compute_spectrum` via `private_key`, plotted
   automatically by `pl.spectrum` and `pl.compare_spectra`.
-- Alt-depth and depth-range filtering in `pp.filter_by_coverage`
-  (`layer='AD'`/`'both'`, `max_depth`, `min_alt_depth`, `max_alt_depth`).
 - Customizable color palettes (`palette=` with `'default'`, `'dark'`, list, or
   dict) and transparent-background export in `pl.spectrum` /
   `pl.spectrum_from_df` / `pl.compare_spectra`.
@@ -32,11 +48,24 @@ and this project adheres to [Semantic Versioning][].
 
 ### Changed
 
+- **VAF semantics (breaking)**: `tl.add_vaf_layer`, `tl.compute_bulk_vaf`,
+  and `utils.compute_vaf` now take `min_dp` instead of `target_dp`. Entries
+  with `dp < min_dp` return `NaN` (previously they were silently clamped).
+  The default is now the **25th percentile** of nonzero DP (per (cell, site)
+  entry for `add_vaf_layer`, per site for `compute_bulk_vaf`).
+- **VAF default is now raw AD / DP**, not hypergeometrically downsampled.
+  Pass `normalize=True` to opt in to downsampling at `min_dp`. This also
+  applies to `utils.compute_vaf`.
+- `tl.compute_bulk_vaf` gained a `key` argument so raw and normalized
+  pseudobulk VAFs can live side-by-side on `adata.var` (e.g.
+  `'bulk_vaf_raw'`, `'bulk_vaf_norm'`).
+- `tl.compute_bulk_vaf` warns when its `min_dp` is below a previously
+  applied `tl.filter_sites(min_bulk_dp=...)` floor.
+- `tl.add_vaf_layer` warns when more than `nan_warn_threshold` (default
+  50%) of DP>0 entries fall below `min_dp`.
 - `pp.load_vcf` builds sparse layers incrementally in CSR chunks, bounding
   peak memory to roughly the final nonzero count rather than
   `n_cells × n_variants`.
-- `tl.compute_callable_sites` moved into the `normalize` module (replaces the
-  removed `compute_rates`).
 - Spectrum plots (`pl.spectrum`, `pl.spectrum_from_df`, `pl.compare_spectra`)
   switched to a ribbon layout: six mutation-type panels butt edge-to-edge
   (`wspace=0`), y-axis is drawn only on the leftmost panel, trinucleotide
@@ -49,6 +78,17 @@ and this project adheres to [Semantic Versioning][].
   `show_mut_type_titles` (default `True`), `show_xticks` (default `True`),
   `show_legend` (default `False`), `bar_width`, `group_padding`, `left_pad`,
   `wspace`.
+
+### Removed
+
+- `pp.filter_variants`, `pp.filter_cells`, `pp.filter_by_coverage` —
+  replaced by `tl.filter_sites` / `tl.filter_cells` operating on columns
+  from `tl.compute_site_stats` / `tl.compute_cell_stats`. `pp.filter_to_snps`
+  is the only filter that remains in `pp`.
+- `tl.compute_callable_sites` — folded into `tl.compute_cell_stats`
+  (pass `min_depth=...` to produce the same `adata.obs['callable_sites']`
+  column that `tl.normalize_spectrum(..., obs_column='callable_sites')`
+  consumes).
 
 ### Fixed
 

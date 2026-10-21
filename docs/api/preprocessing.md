@@ -1,6 +1,9 @@
 # Preprocessing: `pp`
 
-Functions for loading VCF files, annotating variants, and filtering.
+Functions required before QC and analysis: loading VCF files, SNP filtering,
+and trinucleotide context annotation. Depth- and carrier-based filtering
+lives in `tl` and operates on precomputed stats — see
+[Tools](tools.md).
 
 ## Loading data
 
@@ -14,6 +17,15 @@ Functions for loading VCF files, annotating variants, and filtering.
     pp.load_vcf
 ```
 
+## SNP filtering
+
+```{eval-rst}
+.. autosummary::
+    :toctree: ../generated
+
+    pp.filter_to_snps
+```
+
 ## Annotation
 
 ```{eval-rst}
@@ -21,16 +33,4 @@ Functions for loading VCF files, annotating variants, and filtering.
     :toctree: ../generated
 
     pp.annotate_contexts
-```
-
-## Filtering
-
-```{eval-rst}
-.. autosummary::
-    :toctree: ../generated
-
-    pp.filter_variants
-    pp.filter_cells
-    pp.filter_by_coverage
-    pp.filter_to_snps
 ```

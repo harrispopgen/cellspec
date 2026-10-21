@@ -1,8 +1,9 @@
 # Tools: `tl`
 
-Functions for computing mutation spectra, calculating rates, and identifying mutation patterns.
+Functions for QC, filtering, VAF computation, mutation spectra, and
+mutational signatures.
 
-## Mutation spectra
+## QC statistics
 
 ```{eval-rst}
 .. module:: cellspec.tl
@@ -11,18 +12,18 @@ Functions for computing mutation spectra, calculating rates, and identifying mut
 .. autosummary::
     :toctree: ../generated
 
-    tl.compute_spectrum
-    tl.compute_spectrum_from_mask
-    tl.normalize_spectrum
+    tl.compute_site_stats
+    tl.compute_cell_stats
 ```
 
-## Normalization
+## Filtering
 
 ```{eval-rst}
 .. autosummary::
     :toctree: ../generated
 
-    tl.compute_callable_sites
+    tl.filter_sites
+    tl.filter_cells
 ```
 
 ## Variant allele frequency
@@ -33,6 +34,17 @@ Functions for computing mutation spectra, calculating rates, and identifying mut
 
     tl.add_vaf_layer
     tl.compute_bulk_vaf
+```
+
+## Mutation spectra
+
+```{eval-rst}
+.. autosummary::
+    :toctree: ../generated
+
+    tl.compute_spectrum
+    tl.compute_spectrum_from_mask
+    tl.normalize_spectrum
 ```
 
 ## Pattern identification

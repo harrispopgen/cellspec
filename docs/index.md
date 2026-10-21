@@ -66,41 +66,53 @@ adata.write_h5ad(filename)
 
 ### A typical workflow
 
-Once loaded, a standard trinucleotide spectrum workflow looks like this:
+Once loaded, a standard workflow is: restrict to SNPs, annotate the
+ancestral trinucleotide context, compute per-site and per-cell QC
+statistics, filter from those stats, and then compute the spectrum.
 
 ```python
-# Restrict to SNPs and annotate the ancestral trinucleotide context
+# Preprocessing — SNPs + trinucleotide context
 spc.pp.filter_to_snps(adata)
 spc.pp.annotate_contexts(adata, fasta_path="reference.fa")
 
-# Quality-filter by coverage. Default (layer='DP') requires every cell to
-# meet min_depth; see `pp.filter_by_coverage` for AD-based and depth-range
-# filtering (e.g. layer='both', max_depth=...).
-spc.pp.filter_by_coverage(adata, min_depth=10)
+# QC stats land on adata.var / adata.obs
+spc.tl.compute_site_stats(adata)                 # dp_total, dp_mean, dp_median, dp_min, dp_max, carrier_freq
+spc.tl.compute_cell_stats(adata, min_depth=10)   # total_dp, mean_dp_per_site, callable_sites
 
-# Compute a per-cell 96-channel spectrum (stored in adata.obsm['spectrum_somatic'])
+# Filtering reads from the precomputed columns above
+spc.tl.filter_sites(adata, min_bulk_dp=100, min_carrier_freq=0.01)
+spc.tl.filter_cells(adata, min_callable_sites=1000)
+
+# Spectrum
 spc.tl.compute_spectrum(adata, key="somatic")
-
-# Plot the aggregate spectrum across all cells
 spc.pl.spectrum(adata, key="somatic", aggregate="sum")
 ```
 
+Each `filter_sites` / `filter_cells` call appends its applied thresholds
+to `adata.uns['filter_sites_history']` / `['filter_cells_history']`, so
+downstream functions (e.g. `tl.compute_bulk_vaf`) can warn when a later
+`min_dp` is below an already-applied floor.
+
 ### Variant allele frequencies
 
-`cellspec` provides two coverage-normalized VAF estimators:
+`cellspec` provides per-cell and pseudobulk VAF estimators. Both default to
+**raw** VAF (`AD / DP`) with a `min_dp` floor — any entry below `min_dp`
+becomes `NaN`. Setting `normalize=True` applies hypergeometric
+downsampling at `min_dp` for coverage-uniform comparison across sites.
 
 ```python
-# Per-cell VAF layer (stored in adata.layers['VAF'])
-spc.tl.add_vaf_layer(adata, target_dp=10)
+# Per-cell VAF layer, stored in adata.layers['VAF']
+spc.tl.add_vaf_layer(adata)                      # raw AD / DP; min_dp from 25th percentile
+spc.tl.add_vaf_layer(adata, min_dp=20, normalize=True)   # downsampled to 20
 
-# Pseudobulk VAF per site (stored in adata.var['bulk_vaf'])
-spc.tl.compute_bulk_vaf(adata)
+# Pseudobulk VAF per site, stored in adata.var[key]. Use distinct keys to
+# keep raw and normalized side-by-side.
+spc.tl.compute_bulk_vaf(adata, key="bulk_vaf_raw")
+spc.tl.compute_bulk_vaf(adata, normalize=True, key="bulk_vaf_norm")
 ```
 
-Both use hypergeometric downsampling to a target depth so that sites with
-different coverage are directly comparable. `compute_bulk_vaf` is often a
-convenient first-pass filter for picking out high-confidence variants
-across a cohort before computing per-cell spectra.
+If `min_dp` is omitted, it defaults to the 25th percentile of DP (per
+(cell, site) entry for `add_vaf_layer`, per site for `compute_bulk_vaf`).
 
 ### Mutational signatures
 
