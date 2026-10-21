@@ -21,7 +21,6 @@ Functions for loading VCF files, annotating variants, and filtering.
     :toctree: ../generated
 
     pp.annotate_contexts
-    pp.add_vaf_layer
 ```
 
 ## Filtering

@@ -25,6 +25,16 @@ Functions for computing mutation spectra, calculating rates, and identifying mut
     tl.compute_callable_sites
 ```
 
+## Variant allele frequency
+
+```{eval-rst}
+.. autosummary::
+    :toctree: ../generated
+
+    tl.add_vaf_layer
+    tl.compute_bulk_vaf
+```
+
 ## Pattern identification
 
 ```{eval-rst}
@@ -32,4 +42,13 @@ Functions for computing mutation spectra, calculating rates, and identifying mut
     :toctree: ../generated
 
     tl.private_mutations
+```
+
+## Mutational signatures
+
+```{eval-rst}
+.. autosummary::
+    :toctree: ../generated
+
+    tl.fit_cosmic_signatures
 ```

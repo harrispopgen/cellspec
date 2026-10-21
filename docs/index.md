@@ -64,6 +64,57 @@ This initial step can take a somewhat long time, especially for datasets with a 
 adata.write_h5ad(filename)
 ```
 
+### A typical workflow
+
+Once loaded, a standard trinucleotide spectrum workflow looks like this:
+
+```python
+# Restrict to SNPs and annotate the ancestral trinucleotide context
+spc.pp.filter_to_snps(adata)
+spc.pp.annotate_contexts(adata, fasta_path="reference.fa")
+
+# Quality-filter by coverage. Default (layer='DP') requires every cell to
+# meet min_depth; see `pp.filter_by_coverage` for AD-based and depth-range
+# filtering (e.g. layer='both', max_depth=...).
+spc.pp.filter_by_coverage(adata, min_depth=10)
+
+# Compute a per-cell 96-channel spectrum (stored in adata.obsm['spectrum_somatic'])
+spc.tl.compute_spectrum(adata, key="somatic")
+
+# Plot the aggregate spectrum across all cells
+spc.pl.spectrum(adata, key="somatic", aggregate="sum")
+```
+
+### Variant allele frequencies
+
+`cellspec` provides two coverage-normalized VAF estimators:
+
+```python
+# Per-cell VAF layer (stored in adata.layers['VAF'])
+spc.tl.add_vaf_layer(adata, target_dp=10)
+
+# Pseudobulk VAF per site (stored in adata.var['bulk_vaf'])
+spc.tl.compute_bulk_vaf(adata)
+```
+
+Both use hypergeometric downsampling to a target depth so that sites with
+different coverage are directly comparable. `compute_bulk_vaf` is often a
+convenient first-pass filter for picking out high-confidence variants
+across a cohort before computing per-cell spectra.
+
+### Mutational signatures
+
+Fit COSMIC mutational signatures to a computed spectrum via
+`tl.fit_cosmic_signatures` (wraps `SigProfilerAssignment`):
+
+```python
+# Per-cell fit (works best when each cell carries many mutations)
+spc.tl.fit_cosmic_signatures(adata, key="somatic")
+
+# For sparse single-cell data, aggregate within groups first
+spc.tl.fit_cosmic_signatures(adata, key="somatic", groupby="lineage")
+```
+
 Please refer to the [documentation][] and [tutorials][] for more instruction,
 and the [API documentation][] for information on specific functionality.
 
