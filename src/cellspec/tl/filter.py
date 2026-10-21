@@ -8,8 +8,8 @@ import numpy as np
 _SITE_FILTER_SPEC: dict[str, tuple[str, str, str]] = {
     "min_carrier_freq": ("carrier_freq", ">=", "compute_site_stats(stats=['carrier_freq'])"),
     "max_carrier_freq": ("carrier_freq", "<=", "compute_site_stats(stats=['carrier_freq'])"),
-    "min_carrier_count": ("carrier_count", ">=", "compute_site_stats(stats=['carrier_freq'])"),
-    "max_carrier_count": ("carrier_count", "<=", "compute_site_stats(stats=['carrier_freq'])"),
+    "min_n_carriers": ("n_carriers", ">=", "compute_site_stats(stats=['carrier_freq'])"),
+    "max_n_carriers": ("n_carriers", "<=", "compute_site_stats(stats=['carrier_freq'])"),
     "min_bulk_dp": ("dp_total", ">=", "compute_site_stats(stats=['total'])"),
     "max_bulk_dp": ("dp_total", "<=", "compute_site_stats(stats=['total'])"),
     "min_mean_dp": ("dp_mean", ">=", "compute_site_stats(stats=['mean'])"),
@@ -33,8 +33,8 @@ def filter_sites(
     *,
     min_carrier_freq: float | None = None,
     max_carrier_freq: float | None = None,
-    min_carrier_count: int | None = None,
-    max_carrier_count: int | None = None,
+    min_n_carriers: int | None = None,
+    max_n_carriers: int | None = None,
     min_bulk_dp: float | None = None,
     max_bulk_dp: float | None = None,
     min_mean_dp: float | None = None,
@@ -61,8 +61,10 @@ def filter_sites(
     adata : ad.AnnData
     min_carrier_freq, max_carrier_freq : float, optional
         Bounds on ``adata.var['carrier_freq']`` (fraction of cells carrying alt).
-    min_carrier_count, max_carrier_count : int, optional
-        Bounds on ``adata.var['carrier_count']`` (absolute count).
+    min_n_carriers, max_n_carriers : int, optional
+        Bounds on ``adata.var['n_carriers']`` (absolute carrier count). Useful
+        for e.g. filtering to variants with at least 2 carriers to drop
+        singleton calls that are often sequencing errors.
     min_bulk_dp, max_bulk_dp : float, optional
         Bounds on ``adata.var['dp_total']`` (summed depth across cells).
     min_mean_dp, max_mean_dp : float, optional
@@ -79,8 +81,8 @@ def filter_sites(
     thresholds = {
         "min_carrier_freq": min_carrier_freq,
         "max_carrier_freq": max_carrier_freq,
-        "min_carrier_count": min_carrier_count,
-        "max_carrier_count": max_carrier_count,
+        "min_n_carriers": min_n_carriers,
+        "max_n_carriers": max_n_carriers,
         "min_bulk_dp": min_bulk_dp,
         "max_bulk_dp": max_bulk_dp,
         "min_mean_dp": min_mean_dp,

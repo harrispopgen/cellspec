@@ -42,7 +42,7 @@ def compute_site_stats(
 
         - ``dp_total``, ``dp_mean``, ``dp_median``, ``dp_min``, ``dp_max`` for the
           corresponding depth stats requested in ``stats``.
-        - ``carrier_count`` and ``carrier_freq`` when ``'carrier_freq'`` is requested.
+        - ``n_carriers`` and ``carrier_freq`` when ``'carrier_freq'`` is requested.
 
     Notes
     -----
@@ -112,7 +112,7 @@ def compute_site_stats(
         else:
             raise ValueError(f"carrier_source must be 'AD' or 'X', got '{carrier_source}'")
 
-        adata.var["carrier_count"] = counts.astype(np.int64)
+        adata.var["n_carriers"] = counts.astype(np.int64)
         adata.var["carrier_freq"] = counts / adata.n_obs
 
 

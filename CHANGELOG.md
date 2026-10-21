@@ -13,17 +13,18 @@ and this project adheres to [Semantic Versioning][].
 ### Added
 
 - `tl.compute_site_stats`: per-site depth summaries (`dp_total`, `dp_mean`,
-  `dp_median`, `dp_min`, `dp_max`) and carrier frequency / count on
-  `adata.var`. Supersedes the stats paths that lived inside the old
-  `pp.filter_variants` / `pp.filter_by_coverage`.
+  `dp_median`, `dp_min`, `dp_max`), carrier frequency (`carrier_freq`) and
+  absolute carrier count (`n_carriers`) on `adata.var`. Supersedes the stats
+  paths that lived inside the old `pp.filter_variants` /
+  `pp.filter_by_coverage`.
 - `tl.compute_cell_stats`: per-cell depth summaries (`total_dp`,
   `mean_dp_per_site`, and `callable_sites` when `min_depth` is given) on
   `adata.obs`. Replaces `tl.compute_callable_sites`.
 - `tl.filter_sites`: variant-axis filtering from precomputed `.var` columns.
   Takes keyword thresholds (`min_bulk_dp`, `max_bulk_dp`, `min_mean_dp`,
   `max_mean_dp`, `min_median_dp`, `max_median_dp`, `min_carrier_freq`,
-  `max_carrier_freq`, `min_carrier_count`, `max_carrier_count`) and errors
-  with a remediation hint if the required column is missing.
+  `max_carrier_freq`, `min_n_carriers`, `max_n_carriers`) and errors with a
+  remediation hint if the required column is missing.
 - `tl.filter_cells`: cell-axis filtering from precomputed `.obs` columns
   (`min_total_dp`/`max_total_dp`, `min_mean_dp_per_site`/`max_mean_dp_per_site`,
   `min_callable_sites`/`max_callable_sites`).
