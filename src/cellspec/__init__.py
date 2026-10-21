@@ -14,16 +14,20 @@ Data structure:
 
 Example usage:
     import cellspec as spc
-    import anndata as ad
 
     # Preprocessing
     adata = spc.pp.load_vcf('variants.vcf.gz')
-    spc.pp.annotate_contexts(adata, fasta_path='reference.fa')
     spc.pp.filter_to_snps(adata)
+    spc.pp.annotate_contexts(adata, fasta_path='reference.fa')
 
-    # Tools
+    # QC stats and filtering
+    spc.tl.compute_site_stats(adata)
+    spc.tl.compute_cell_stats(adata, min_depth=10)
+    spc.tl.filter_sites(adata, min_bulk_dp=100, min_carrier_freq=0.01)
+    spc.tl.filter_cells(adata, min_callable_sites=1000)
+
+    # Analysis
     spc.tl.compute_spectrum(adata, min_depth=10, key='somatic')
-    spc.tl.compute_callable_sites(adata, min_depth=10)
 
     # Plotting
     spc.pl.spectrum(adata, key='somatic', aggregate='sum')
