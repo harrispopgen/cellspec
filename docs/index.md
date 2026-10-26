@@ -58,6 +58,19 @@ To load a vcf into anndata:
 adata = spc.pp.load_vcf(filename)
 ```
 
+**One ALT per record required.** `pp.load_vcf` stores a single ALT per
+variant and uses per-record AD/DP, so multi-allelic VCF lines raise a
+`ValueError`. Split them first:
+
+```bash
+bcftools norm -m-any input.vcf.gz | bcftools norm -d exact -Oz -o output.vcf.gz
+```
+
+`-m-any` splits each multi-allelic record into one record per ALT; the
+second pass `-d exact` drops any records whose CHROM/POS/REF/ALT all
+match an earlier record (which can happen when a merged VCF already
+contained the biallelic form of a split).
+
 This initial step can take a somewhat long time, especially for datasets with a lot of alleles. As such, it a good idea to save your data in .h5ad format for more convenient loading in the future:
 
 ```python

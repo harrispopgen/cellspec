@@ -28,6 +28,11 @@ def load_vcf(
     - .var['pos']: Genomic position for each variant (1-based, matching VCF)
     - .obs_names: Sample/cell names from VCF
 
+    The input VCF **must have one ALT allele per record** — multi-allelic
+    records raise ``ValueError``. Preprocess with
+    ``bcftools norm -m-any input.vcf.gz | bcftools norm -d exact``
+    to split multi-allelics and drop any duplicates the split produces.
+
     Duplicate variants (same CHROM-POS-REF>ALT) are detected and only the first
     occurrence is kept, with a warning issued.
 
@@ -87,6 +92,19 @@ def load_vcf(
     If duplicate variant records are found (same CHROM-POS-REF>ALT), only the
     first occurrence is kept. This can happen when merging VCFs or from
     overlapping variant calls. Use bcftools norm -d exact to deduplicate VCFs.
+
+    **Multi-allelic sites.** cellspec stores one ALT per variant and uses
+    cyvcf2's per-sample AD / DP, which are only well-defined when each VCF
+    record carries a single ALT. Multi-allelic records raise a ``ValueError``
+    on first encounter rather than silently keeping the first ALT and
+    discarding the rest. The recommended preprocessing pipeline is::
+
+        bcftools norm -m-any input.vcf.gz | bcftools norm -d exact -Oz -o output.vcf.gz
+
+    ``-m-any`` splits every multi-allelic record into one record per ALT.
+    ``-d exact`` then drops any records where CHROM/POS/REF/ALT are all
+    identical to an earlier record (which can happen when the input VCF
+    merged sources that already contained the biallelic form of a split).
     """
     vcf = VCF(vcf_path)
 
@@ -145,6 +163,16 @@ def load_vcf(
         if skip_missing_alt and not has_alt:
             n_skipped += 1
             continue
+
+        if has_alt and len(variant.ALT) > 1:
+            raise ValueError(
+                f"Multi-allelic record at {variant.CHROM}:{variant.POS} "
+                f"({variant.REF}>{','.join(variant.ALT)}). cellspec requires one ALT "
+                f"allele per VCF record (AD/DP semantics are ambiguous otherwise). "
+                f"Split multi-allelic sites before loading, e.g.:\n"
+                f"    bcftools norm -m-any input.vcf.gz | "
+                f"bcftools norm -d exact -Oz -o output.vcf.gz"
+            )
 
         alt_allele = variant.ALT[0] if has_alt else "."
         variant_id = f"{variant.CHROM}-{variant.POS}-{variant.REF}>{alt_allele}"

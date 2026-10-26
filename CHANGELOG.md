@@ -67,6 +67,13 @@ and this project adheres to [Semantic Versioning][].
 - `pp.load_vcf` builds sparse layers incrementally in CSR chunks, bounding
   peak memory to roughly the final nonzero count rather than
   `n_cells × n_variants`.
+- `pp.load_vcf` now raises `ValueError` on the first multi-allelic record
+  it encounters instead of silently keeping only the first ALT. The error
+  points at the recommended preprocessing pipeline
+  (`bcftools norm -m-any input.vcf.gz | bcftools norm -d exact`). This
+  prevents a silent-data-corruption class of bug where the stored `AD`
+  no longer reflects the first ALT once cyvcf2 is handed a multi-allelic
+  record.
 - Spectrum plots (`pl.spectrum`, `pl.spectrum_from_df`, `pl.compare_spectra`)
   switched to a ribbon layout: six mutation-type panels butt edge-to-edge
   (`wspace=0`), y-axis is drawn only on the leftmost panel, trinucleotide
