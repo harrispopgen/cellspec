@@ -4,13 +4,12 @@ from .filter import filter_cells, filter_sites
 from .normalize import normalize_spectrum
 from .private import private_mutations
 from .signatures import fit_cosmic_signatures
-from .spectrum import compute_spectrum, compute_spectrum_from_mask
+from .spectrum import compute_spectrum
 from .stats import compute_cell_stats, compute_site_stats
 from .vaf import add_vaf_layer, compute_bulk_vaf
 
 __all__ = [
     "compute_spectrum",
-    "compute_spectrum_from_mask",
     "compute_site_stats",
     "compute_cell_stats",
     "filter_sites",

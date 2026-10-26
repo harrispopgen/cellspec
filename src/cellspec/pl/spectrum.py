@@ -70,14 +70,13 @@ def _resolve_palette(palette: str | list[str] | dict[str, str] | None) -> dict[s
 
 def spectrum(
     adata: ad.AnnData,
-    key: str = "spectrum",
+    key: str = "per_cell",
+    *,
     cells: list[str] | None = None,
-    groupby: str | None = None,
-    aggregate: str = "sum",
     normalize: bool = False,
     palette: str | list[str] | dict[str, str] | None = None,
-    outdir: str | None = None,
-    figsize: tuple[float, float] = (12, 3),
+    outpath: str | None = None,
+    figsize: tuple[float, float] | None = None,
     dpi: int = 600,
     title: str | None = None,
     ylabel: str | None = None,
@@ -95,317 +94,128 @@ def spectrum(
     wspace: float = _STYLE_DEFAULTS["wspace"],
 ) -> None:
     """
-    Plot mutation spectra for cells/samples or per-group private mutations.
+    Plot a mutation spectrum stored by :func:`cellspec.tl.compute_spectrum`.
 
-    Automatically detects whether spectrum is per-cell (adata.obsm) or
-    per-group (adata.uns) and plots accordingly.
+    The storage layout determines the plot: aggregation and grouping now live
+    on ``tl.compute_spectrum`` and this function just reads whatever was
+    written for ``key``.
+
+    - ``adata.obsm[f'spectrum_{key}']`` — ``(n_cells, 96)`` DataFrame; renders
+      as a multi-row ribbon (one row per cell). Use ``cells=`` to subset.
+    - ``adata.uns[f'spectrum_{key}']`` — either a Series of length 96 (single
+      ribbon) or a ``(96, n_groups)`` DataFrame (one row per group).
 
     Parameters
     ----------
     adata : ad.AnnData
-        AnnData object with computed spectrum
-    key : str, default 'spectrum'
-        Key for spectrum in adata.obsm (per-cell) or adata.uns (per-group)
+    key : str, default 'per_cell'
+        Key suffix. Looks up ``adata.obsm['spectrum_{key}']`` or
+        ``adata.uns['spectrum_{key}']``.
     cells : list of str, optional
-        Specific cells to plot. If None and groupby is None and aggregate is None,
-        plots all cells as separate files.
-        Note: Cannot be used with per-group spectra.
-    groupby : str, optional
-        Column name from adata.obs to group by (e.g., 'cell_type', 'sample_id').
-        If provided, plots one spectrum per group, aggregated by the method specified in 'aggregate'.
-        If None and aggregate is provided, aggregates across all cells.
-        If None and aggregate is None, plots individual cells.
-        Note: Cannot be used with per-group spectra (already grouped).
-    aggregate : str, default 'sum'
-        How to aggregate spectra: 'sum', 'mean', or None.
-        - If groupby is provided: aggregates within each group
-        - If groupby is None: aggregates across all cells
-        - If None: plots individual cells (ignores groupby)
-        Note: For per-group spectra, must be 'sum' or None.
+        Only honored when the spectrum is stored in ``adata.obsm`` (per-cell).
+        Restricts the plot to the given cell names.
     normalize : bool, default False
-        Normalize to proportions (sum to 1).
-        For advanced normalization (by callable sites, coverage, etc.),
-        use spc.tl.normalize_spectrum() first and plot the normalized key.
+        Convert each ribbon's counts to proportions (sum to 1).
     palette : str, list, dict, or None, optional
-        Color palette for mutation types:
-        - None or 'default': use default colors
-        - 'dark': use dark-background compatible colors (C>G as light lavender)
-        - list of 6 colors: colors for ['C>A', 'C>G', 'C>T', 'T>A', 'T>C', 'T>G']
-        - dict: mapping mutation types to colors (e.g., {'C>A': '#00BCD4', ...})
-    outdir : str, optional
-        Output directory for saving plots
-    figsize : tuple, default (12, 3)
-        Figure size (per spectrum row). Multi-row plots scale the height by
-        the number of spectra automatically.
+        Mutation-type color palette (see :func:`cellspec.pl.spectrum_from_df`).
+    outpath : str, optional
+        If given, saves the figure to this path (parent dirs auto-created).
+    figsize : tuple, optional
+        Figure size. Defaults to ``(12, 3 * n_rows)``.
     dpi : int, default 600
-        DPI for saved figures
-    title : str, optional
-        Plot title (used for aggregate plots or individual cell prefix)
-    ylabel : str, optional
-        Y-axis label. If None, uses "Mutation count" or "Proportion" based on normalize parameter
-    ylim : tuple of (float, float), optional
-        Y-axis limits as (ymin, ymax). If None, automatically calculated from data.
-    transparent : bool, default False
-        Save figure with transparent background (only affects saved files)
-    yticks : list of float, optional
-        Explicit y-tick positions on the leftmost panel (in raw data units).
-    ytick_scale : float, default 1.0
-        Divide y-tick labels by this value for display. Useful for showing
-        counts in thousands (``ytick_scale=1e3``) or millions (``1e6``).
-    ytick_unit_label : str, optional
-        Unit suffix appended to the y-axis label when ``ytick_scale`` is used,
-        e.g. ``"thousands"`` -> ``"Mutation count (thousands)"``.
-    show_mut_type_titles : bool, default True
-        Draw per-panel titles (``C>A``, ``C>G``, …) above the top row.
-    show_xticks : bool, default True
-        Draw monospace trinucleotide labels under the bottom row.
-    show_legend : bool, default False
-        Draw a shared top legend of mutation-type color swatches. Usually
-        redundant when ``show_mut_type_titles=True``.
-    bar_width : float, default 0.8
-        Width of each bar (in context units).
-    group_padding : float, default 0.5
-        Horizontal padding between adjacent mutation-type panels.
-    left_pad : float, default 0.25
-        Extra left-side offset applied only to the leftmost panel so that
-        bars don't butt up against the y-axis.
-    wspace : float, default 0.0
-        ``subplots_adjust`` wspace. ``0`` makes panels read as one ribbon.
+    title, ylabel, ylim, transparent, yticks, ytick_scale, ytick_unit_label,
+    show_mut_type_titles, show_xticks, show_legend, bar_width, group_padding,
+    left_pad, wspace :
+        Style knobs; see :func:`cellspec.pl.spectrum_from_df`.
 
     Examples
     --------
     >>> import cellspec as spc
-    >>> # Per-cell spectra examples:
-    >>> # Plot all cells as separate files
-    >>> spc.pl.spectrum(adata, key="somatic", outdir="figures/somatic/")
-
-    >>> # Plot aggregate spectrum (sum across all cells)
-    >>> spc.pl.spectrum(adata, key="somatic", aggregate="sum")
-
-    >>> # Plot aggregate spectrum (mean across all cells)
-    >>> spc.pl.spectrum(adata, key="somatic", aggregate="mean")
-
-    >>> # Plot spectra grouped by cell type (sum within each group)
-    >>> spc.pl.spectrum(adata, key="somatic", groupby="cell_type")
-
-    >>> # Plot spectra grouped by sample (mean within each group)
-    >>> spc.pl.spectrum(adata, key="somatic", groupby="sample_id", aggregate="mean")
-
-    >>> # Plot individual cells
-    >>> spc.pl.spectrum(adata, key="somatic", aggregate=None)
-
-    >>> # Plot specific cells
-    >>> spc.pl.spectrum(adata, key="somatic", cells=["cell_1", "cell_2", "cell_3"], aggregate=None)
-
-    >>> # Pre-normalize by callable sites then plot
-    >>> spc.tl.normalize_spectrum(
-    ...     adata, key="somatic", method="obs_column", obs_column="callable_sites", output_key="somatic_rate"
-    ... )
-    >>> spc.pl.spectrum(adata, key="somatic_rate", aggregate="sum")
-
-    >>> # Per-group spectra examples:
-    >>> # Compute and plot private mutation spectra per lineage
-    >>> spc.tl.private_mutations(adata, groupby="lineage", genotypes=[3], store_key="private")
-    >>> spc.tl.compute_spectrum(adata, genotypes=[3], private_key="private", key="private_spectra")
-    >>> spc.pl.spectrum(adata, key="private_spectra")  # Automatically detects per-group mode
-
-    Notes
-    -----
-    **Per-cell mode:**
-    - Spectrum stored in adata.obsm[f'spectrum_{key}']
-    - Shape: (cells × 96 contexts)
-    - Supports groupby, aggregate, cells parameters
-
-    **Per-group mode:**
-    - Spectrum stored in adata.uns[f'spectrum_{key}']
-    - Shape: (96 contexts × groups)
-    - Already grouped/aggregated by private_mutations groups
-    - Does not support groupby, cells parameters (raises error)
-    - Automatically plots one row per group
-
-    For large datasets (>10 cells), using aggregate='sum' or groupby='cell_type'
-    or saving individual files to outdir is recommended over plotting all cells in one figure.
-
-    For advanced normalization strategies (e.g., by callable sites, coverage,
-    or custom vectors), use spc.tl.normalize_spectrum() before plotting.
+    >>> # Per-cell matrix: plot one row per cell (subset first for large N)
+    >>> spc.tl.compute_spectrum(adata)
+    >>> spc.pl.spectrum(adata, key="per_cell", cells=adata.obs_names[:5])
+    >>>
+    >>> # Pooled sum across all cells (Series)
+    >>> spc.tl.compute_spectrum(adata, aggregate="sum")
+    >>> spc.pl.spectrum(adata, key="sum")
+    >>>
+    >>> # Sum by group (one ribbon per group)
+    >>> spc.tl.compute_spectrum(adata, aggregate="sum", groupby="lineage")
+    >>> spc.pl.spectrum(adata, key="sum_by_lineage")
+    >>>
+    >>> # Private spectrum per lineage
+    >>> spc.tl.private_mutations(adata, groupby="lineage", store_key="private")
+    >>> spc.tl.compute_spectrum(adata, aggregate="private_spectrum", private_key="private")
+    >>> spc.pl.spectrum(adata, key="private_spectrum_from_private")
     """
-    # Get spectrum - check both obsm (per-cell) and uns (per-group)
     spectrum_key = f"spectrum_{key}"
-    metadata_key = f"spectrum_{key}_metadata"
+    in_obsm = spectrum_key in adata.obsm
+    in_uns = spectrum_key in adata.uns
 
-    # Determine mode by checking metadata
-    is_per_group = False
-    if metadata_key in adata.uns:
-        metadata = adata.uns[metadata_key]
-        is_per_group = metadata.get("mode") == "per_group"
+    if not in_obsm and not in_uns:
+        raise ValueError(
+            f"'{spectrum_key}' not found in adata.obsm or adata.uns. "
+            f"Run spc.tl.compute_spectrum(..., key='{key}') first."
+        )
+    if in_obsm and in_uns:
+        raise ValueError(
+            f"'{spectrum_key}' is set in both adata.obsm and adata.uns. Drop one before plotting to disambiguate."
+        )
 
-    if is_per_group:
-        # Per-group mode: data in adata.uns, shape (96 contexts × groups)
-        if spectrum_key not in adata.uns:
-            raise ValueError(
-                f"'{spectrum_key}' not found in adata.uns. "
-                f"Run spc.tl.compute_spectrum(..., key='{key}', private_key='...') first."
-            )
-        spectrum_df = adata.uns[spectrum_key]
+    if outpath:
+        parent_dir = os.path.dirname(outpath)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
 
-        # Validate incompatible parameters
+    style_kwargs = {
+        "normalize": normalize,
+        "palette": palette,
+        "outpath": outpath,
+        "dpi": dpi,
+        "ylabel": ylabel,
+        "ylim": ylim,
+        "transparent": transparent,
+        "yticks": yticks,
+        "ytick_scale": ytick_scale,
+        "ytick_unit_label": ytick_unit_label,
+        "show_mut_type_titles": show_mut_type_titles,
+        "show_xticks": show_xticks,
+        "show_legend": show_legend,
+        "bar_width": bar_width,
+        "group_padding": group_padding,
+        "left_pad": left_pad,
+        "wspace": wspace,
+    }
+
+    if in_obsm:
+        per_cell_df = adata.obsm[spectrum_key]
         if cells is not None:
-            raise ValueError("'cells' parameter cannot be used with per-group spectra")
-        if groupby is not None:
-            raise ValueError("'groupby' parameter cannot be used with per-group spectra (already grouped)")
-        if aggregate is not None and aggregate != "sum":
-            raise ValueError("'aggregate' parameter must be 'sum' or None for per-group spectra")
-
-        # Convert to dict for plotting (spectrum_df is 96 contexts × groups)
-        spectra_dict = {col: spectrum_df[col] for col in spectrum_df.columns}
-
+            per_cell_df = per_cell_df.loc[cells, :]
+        spectra_dict = {idx: per_cell_df.loc[idx, :] for idx in per_cell_df.index}
         _plot_multiple_spectra(
             spectra_dict,
-            normalize=normalize,
-            palette=palette,
-            title=title or "Private Mutation Spectra",
-            outpath=os.path.join(outdir, f"{key}_private.png") if outdir else None,
-            figsize=figsize,
-            dpi=dpi,
-            ylabel=ylabel,
-            ylim=ylim,
-            transparent=transparent,
-            yticks=yticks,
-            ytick_scale=ytick_scale,
-            ytick_unit_label=ytick_unit_label,
-            show_mut_type_titles=show_mut_type_titles,
-            show_xticks=show_xticks,
-            show_legend=show_legend,
-            bar_width=bar_width,
-            group_padding=group_padding,
-            left_pad=left_pad,
-            wspace=wspace,
+            title=title,
+            figsize=figsize or (12, 3 * max(1, len(spectra_dict))),
+            **style_kwargs,
         )
         return
 
-    # Per-cell mode: data in adata.obsm, shape (cells × 96 contexts)
-    if spectrum_key not in adata.obsm:
-        raise ValueError(
-            f"'{spectrum_key}' not found in adata.obsm. Run spc.tl.compute_spectrum(..., key='{key}') first."
-        )
-
-    spectrum_df = adata.obsm[spectrum_key]
-
-    # Select cells
+    obj = adata.uns[spectrum_key]
     if cells is not None:
-        spectrum_df = spectrum_df.loc[cells, :]
+        raise ValueError("'cells' only applies to per-cell spectra stored in adata.obsm.")
 
-    # Determine plotting mode
-    if groupby is not None:
-        # Group by column in .obs
-        if groupby not in adata.obs.columns:
-            raise ValueError(
-                f"groupby column '{groupby}' not found in adata.obs. Available columns: {list(adata.obs.columns)}"
-            )
-
-        if aggregate not in ["sum", "mean"]:
-            raise ValueError(f"aggregate must be 'sum' or 'mean' when using groupby, got '{aggregate}'")
-
-        spectra_dict = {}
-        for group_name, group_indices in adata.obs.groupby(groupby).groups.items():
-            # Get cells in this group that are in spectrum_df
-            group_cells = [cell for cell in group_indices if cell in spectrum_df.index]
-            if len(group_cells) > 0:
-                if aggregate == "sum":
-                    spectra_dict[str(group_name)] = spectrum_df.loc[group_cells, :].sum(axis=0)
-                else:  # mean
-                    spectra_dict[str(group_name)] = spectrum_df.loc[group_cells, :].mean(axis=0)
-
+    if isinstance(obj, pd.Series):
+        _plot_single_spectrum(obj, title=title, figsize=figsize or (12, 3), **style_kwargs)
+    elif isinstance(obj, pd.DataFrame):
+        spectra_dict = {col: obj[col] for col in obj.columns}
         _plot_multiple_spectra(
             spectra_dict,
-            normalize=normalize,
-            palette=palette,
-            title=title or f"Spectra by {groupby}",
-            outpath=os.path.join(outdir, f"{key}_by_{groupby}.png") if outdir else None,
-            figsize=figsize,
-            dpi=dpi,
-            ylabel=ylabel,
-            ylim=ylim,
-            transparent=transparent,
-            yticks=yticks,
-            ytick_scale=ytick_scale,
-            ytick_unit_label=ytick_unit_label,
-            show_mut_type_titles=show_mut_type_titles,
-            show_xticks=show_xticks,
-            show_legend=show_legend,
-            bar_width=bar_width,
-            group_padding=group_padding,
-            left_pad=left_pad,
-            wspace=wspace,
+            title=title,
+            figsize=figsize or (12, 3 * max(1, len(spectra_dict))),
+            **style_kwargs,
         )
-
-    elif aggregate is not None:
-        # Aggregate across all cells
-        if aggregate == "sum":
-            aggregated = spectrum_df.sum(axis=0)
-        elif aggregate == "mean":
-            aggregated = spectrum_df.mean(axis=0)
-        else:
-            raise ValueError(f"aggregate must be 'sum', 'mean', or None, got '{aggregate}'")
-
-        _plot_single_spectrum(
-            aggregated,
-            normalize=normalize,
-            palette=palette,
-            title=title or f"Aggregated Spectrum ({aggregate})",
-            outpath=os.path.join(outdir, f"{key}_aggregated.png") if outdir else None,
-            figsize=figsize,
-            dpi=dpi,
-            ylabel=ylabel,
-            ylim=ylim,
-            transparent=transparent,
-            yticks=yticks,
-            ytick_scale=ytick_scale,
-            ytick_unit_label=ytick_unit_label,
-            show_mut_type_titles=show_mut_type_titles,
-            show_xticks=show_xticks,
-            show_legend=show_legend,
-            bar_width=bar_width,
-            group_padding=group_padding,
-            left_pad=left_pad,
-            wspace=wspace,
-        )
-
     else:
-        # Plot individual cells
-        if outdir:
-            os.makedirs(outdir, exist_ok=True)
-
-        for cell_name in spectrum_df.index:
-            cell_spectrum = spectrum_df.loc[cell_name, :]
-            cell_title = f"{title} - {cell_name}" if title else cell_name
-            outpath = os.path.join(outdir, f"{cell_name}_spectrum.png") if outdir else None
-
-            _plot_single_spectrum(
-                cell_spectrum,
-                normalize=normalize,
-                palette=palette,
-                title=cell_title,
-                outpath=outpath,
-                figsize=figsize,
-                dpi=dpi,
-                ylabel=ylabel,
-                ylim=ylim,
-                transparent=transparent,
-                yticks=yticks,
-                ytick_scale=ytick_scale,
-                ytick_unit_label=ytick_unit_label,
-                show_mut_type_titles=show_mut_type_titles,
-                show_xticks=show_xticks,
-                show_legend=show_legend,
-                bar_width=bar_width,
-                group_padding=group_padding,
-                left_pad=left_pad,
-                wspace=wspace,
-            )
-
-            if outdir:
-                print(f"Saved: {outpath}")
+        raise TypeError(f"adata.uns['{spectrum_key}'] has unsupported type {type(obj)}")
 
 
 def spectrum_from_df(
@@ -587,7 +397,6 @@ def spectrum_from_df(
 def compare_spectra(
     adata: ad.AnnData,
     keys: list[str],
-    aggregate: str = "sum",
     normalize: bool = False,
     palette: str | list[str] | dict[str, str] | None = None,
     outpath: str | None = None,
@@ -609,40 +418,32 @@ def compare_spectra(
     wspace: float = _STYLE_DEFAULTS["wspace"],
 ) -> None:
     """
-    Compare multiple spectra (e.g., different filtering strategies or conditions).
+    Compare multiple spectra on a single stacked figure.
 
-    Supports both per-cell and per-group spectra. Per-group spectra are already
-    aggregated, so each group will appear as a separate row in the plot.
+    Each ``key`` is resolved against ``adata.obsm`` and ``adata.uns``:
+
+    - per-cell matrix in ``adata.obsm['spectrum_{key}']`` → summed across all
+      cells to produce one row
+    - Series in ``adata.uns['spectrum_{key}']`` → used as-is (one row)
+    - DataFrame ``(96, n_groups)`` in ``adata.uns['spectrum_{key}']`` → each
+      group becomes its own row, labeled ``'{key}_{group}'``
 
     Parameters
     ----------
     adata : ad.AnnData
-        AnnData object with computed spectra
     keys : list of str
-        Keys for spectra (in adata.obsm for per-cell or adata.uns for per-group)
-    aggregate : str, default 'sum'
-        How to aggregate each per-cell spectrum: 'sum' or 'mean'.
-        For per-group spectra, must be 'sum' (already aggregated).
     normalize : bool, default False
-        Normalize to proportions.
-        For advanced normalization (by callable sites, coverage, etc.),
-        use spc.tl.normalize_spectrum() first and pass normalized keys.
+        Normalize each row to proportions. For advanced normalization (by
+        callable sites, coverage, etc.), use :func:`cellspec.tl.normalize_spectrum`
+        first and pass the normalized keys.
     palette : str, list, dict, or None, optional
-        Color palette (see spc.pl.spectrum for details)
     outpath : str, optional
-        Path to save figure
     figsize : tuple, optional
-        Figure size. If None, auto-calculated based on number of spectra
     dpi : int, default 600
-        DPI for saved figure
     title : str, optional
-        Overall plot title (displayed at the top)
     ylabel : str, optional
-        Y-axis label. If None, uses "Mutation count" or "Proportion" based on normalize parameter
     ylim : tuple of (float, float), optional
-        Y-axis limits as (ymin, ymax). If None, automatically calculated from data.
     transparent : bool, default False
-        Save figure with transparent background (only affects saved files)
     yticks, ytick_scale, ytick_unit_label, show_mut_type_titles, show_xticks,
     show_legend, bar_width, group_padding, left_pad, wspace :
         Style knobs forwarded to the plotting backend. See
@@ -651,76 +452,34 @@ def compare_spectra(
     Examples
     --------
     >>> import cellspec as spc
-    >>> # Compare germline vs somatic (per-cell spectra)
-    >>> spc.pl.compare_spectra(
-    ...     adata,
-    ...     keys=["germline", "somatic"],
-    ...     aggregate="sum",
-    ...     normalize=True,
-    ...     title="Germline vs Somatic",
-    ...     outpath="figures/comparison.png",
-    ... )
+    >>> # Compare two per-cell spectra, pooled across all cells
+    >>> spc.pl.compare_spectra(adata, keys=["germline", "somatic"], normalize=True, outpath="figures/compare.png")
     >>>
-    >>> # Compare with rate normalization
-    >>> spc.tl.normalize_spectrum(
-    ...     adata, key="germline", method="obs_column", obs_column="callable_sites", output_key="germline_rate"
-    ... )
-    >>> spc.tl.normalize_spectrum(
-    ...     adata, key="somatic", method="obs_column", obs_column="callable_sites", output_key="somatic_rate"
-    ... )
-    >>> spc.pl.compare_spectra(
-    ...     adata,
-    ...     keys=["germline_rate", "somatic_rate"],
-    ...     aggregate="sum",
-    ...     title="Germline vs Somatic (per callable site)",
-    ... )
-    >>>
-    >>> # Compare per-group private mutation spectra
-    >>> # If 'private_spectra' has 3 groups, this will show all 3 in one plot
-    >>> spc.pl.compare_spectra(adata, keys=["private_spectra"], title="Private Mutations by Lineage")
+    >>> # Compare per-group private spectra across keys
+    >>> spc.pl.compare_spectra(adata, keys=["private_spectrum_from_private"])
     """
-    # Collect spectra
-    spectra_dict = {}
+    spectra_dict: dict[str, pd.Series] = {}
     for key in keys:
         spectrum_key = f"spectrum_{key}"
-        metadata_key = f"spectrum_{key}_metadata"
+        in_obsm = spectrum_key in adata.obsm
+        in_uns = spectrum_key in adata.uns
 
-        # Check if per-group mode
-        is_per_group = False
-        if metadata_key in adata.uns:
-            metadata = adata.uns[metadata_key]
-            is_per_group = metadata.get("mode") == "per_group"
+        if not in_obsm and not in_uns:
+            raise ValueError(f"'{spectrum_key}' not found in adata.obsm or adata.uns")
+        if in_obsm and in_uns:
+            raise ValueError(f"'{spectrum_key}' is set in both adata.obsm and adata.uns")
 
-        if is_per_group:
-            # Per-group mode: data in adata.uns
-            if spectrum_key not in adata.uns:
-                raise ValueError(f"'{spectrum_key}' not found in adata.uns")
-
-            if aggregate != "sum":
-                raise ValueError(
-                    f"For per-group spectrum '{key}', aggregate must be 'sum' (data is already aggregated)"
-                )
-
-            # Per-group spectra are already aggregated
-            # Add each group as a separate entry with key_groupname
-            spectrum_df = adata.uns[spectrum_key]
-            for group in spectrum_df.columns:
-                spectra_dict[f"{key}_{group}"] = spectrum_df[group]
-
+        if in_obsm:
+            spectra_dict[key] = adata.obsm[spectrum_key].sum(axis=0)
         else:
-            # Per-cell mode: data in adata.obsm
-            if spectrum_key not in adata.obsm:
-                raise ValueError(f"'{spectrum_key}' not found in adata.obsm")
-
-            spectrum_df = adata.obsm[spectrum_key]
-
-            # Aggregate
-            if aggregate == "sum":
-                spectra_dict[key] = spectrum_df.sum(axis=0)
-            elif aggregate == "mean":
-                spectra_dict[key] = spectrum_df.mean(axis=0)
+            obj = adata.uns[spectrum_key]
+            if isinstance(obj, pd.Series):
+                spectra_dict[key] = obj
+            elif isinstance(obj, pd.DataFrame):
+                for group in obj.columns:
+                    spectra_dict[f"{key}_{group}"] = obj[group]
             else:
-                raise ValueError(f"Invalid aggregate '{aggregate}'. Must be 'sum' or 'mean'.")
+                raise TypeError(f"adata.uns['{spectrum_key}'] has unsupported type {type(obj)}")
 
     _plot_multiple_spectra(
         spectra_dict,

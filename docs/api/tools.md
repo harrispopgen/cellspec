@@ -43,7 +43,6 @@ mutational signatures.
     :toctree: ../generated
 
     tl.compute_spectrum
-    tl.compute_spectrum_from_mask
     tl.normalize_spectrum
 ```
 

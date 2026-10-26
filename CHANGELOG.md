@@ -12,6 +12,29 @@ and this project adheres to [Semantic Versioning][].
 
 ### Added
 
+- `tl.compute_spectrum` grew an `aggregate` argument with four modes:
+  `None` (per-cell matrix, default), `'sum'`, `'private_spectrum'`, and
+  `'randomize'`. Groupby and private-mask handling moved out of `pl.spectrum`
+  into this function. The result is stored at `adata.obsm['spectrum_{key}']`
+  when `aggregate=None` and `adata.uns['spectrum_{key}']` otherwise.
+- `tl.compute_spectrum(aggregate='randomize', ...)`: single-carrier
+  assignment (Beichman et al.) — each variant with ≥1 carrier contributes
+  one count, randomly credited to a carrier cell (or its group when
+  `groupby` is given). Prevents common polymorphisms from inflating a
+  group's spectrum. Deterministic when `groupby=None`; `random_state`
+  controls the per-group draw.
+- `tl.compute_spectrum(aggregate='private_spectrum', private_key=...)`:
+  spectrum of each owner's private variants, each variant counted exactly
+  once per owner. Reads the mask from
+  `adata.uns['{private_key}_mutations']`; inherits the per-cell vs
+  per-group ownership from the prior `tl.private_mutations` call.
+- `tl.compute_spectrum` gained a `csv_path=` argument that writes the
+  computed Series/DataFrame to disk (creating parent dirs if needed).
+- Auto-generated default keys: `compute_spectrum(aggregate=None)` →
+  `'per_cell'`; `aggregate='sum'` → `'sum'`; with `groupby='lineage'` →
+  `'sum_by_lineage'`; `aggregate='private_spectrum'` →
+  `'private_spectrum_from_{private_key}'`. Resolves the old
+  `spectrum_spectrum` double-prefix.
 - `tl.compute_site_stats`: per-site depth summaries (`dp_total`, `dp_mean`,
   `dp_median`, `dp_min`, `dp_max`), carrier frequency (`carrier_freq`) and
   absolute carrier count (`n_carriers`) on `adata.var`. Supersedes the stats
@@ -49,6 +72,23 @@ and this project adheres to [Semantic Versioning][].
 
 ### Changed
 
+- **`pl.spectrum` simplified (breaking)**: dropped `groupby`, `aggregate`,
+  and `outdir` arguments. The function now autodetects what to plot from
+  the storage location — `adata.obsm[f'spectrum_{key}']` renders as a
+  multi-row per-cell ribbon (subset with `cells=`), while
+  `adata.uns[f'spectrum_{key}']` is plotted as either a single Series or a
+  per-group DataFrame. All grouping and aggregation now live on
+  `tl.compute_spectrum`.
+- **`pl.compare_spectra` simplified (breaking)**: dropped the `aggregate`
+  argument. Per-cell storage is summed; `uns` Series/DataFrames are read
+  directly, with DataFrame columns expanded into per-group rows.
+- `tl.compute_spectrum` default `key` changed from `'spectrum'` to the
+  auto-generated name described above. Existing callers that passed an
+  explicit `key` are unaffected; callers relying on `obsm['spectrum_spectrum']`
+  need to either pass `key='spectrum'` or update to the new default.
+- Private-mutation spectra now count each private variant exactly once per
+  owner (per cell or per group), replacing the previous naive per-cell sum
+  that inflated group spectra by the number of cells in the group.
 - **VAF semantics (breaking)**: `tl.add_vaf_layer`, `tl.compute_bulk_vaf`,
   and `utils.compute_vaf` now take `min_dp` instead of `target_dp`. Entries
   with `dp < min_dp` return `NaN` (previously they were silently clamped).
@@ -89,6 +129,9 @@ and this project adheres to [Semantic Versioning][].
 
 ### Removed
 
+- `tl.compute_spectrum_from_mask` — the "I have a boolean variant mask,
+  give me 96-channel counts" case is now served by
+  `tl.compute_spectrum(..., variant_mask=mask, aggregate='sum')`.
 - `pp.filter_variants`, `pp.filter_cells`, `pp.filter_by_coverage` —
   replaced by `tl.filter_sites` / `tl.filter_cells` operating on columns
   from `tl.compute_site_stats` / `tl.compute_cell_stats`. `pp.filter_to_snps`

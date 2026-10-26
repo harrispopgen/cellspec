@@ -1,5 +1,7 @@
 """Compute mutation spectra from AnnData objects."""
 
+import os
+
 import anndata as ad
 import numpy as np
 import pandas as pd
@@ -8,169 +10,81 @@ from tqdm import tqdm
 
 from cellspec.utils.constants import get_canonical_96_order
 
+AGGREGATE_MODES = ("sum", "private_spectrum", "randomize")
 
-def compute_spectrum(
+
+def _default_key(aggregate: str | None, groupby: str | None, private_key: str | None) -> str:
+    """Build a default `key` from the aggregation parameters."""
+    if aggregate is None:
+        return "per_cell"
+    if aggregate == "private_spectrum":
+        return f"private_spectrum_from_{private_key}"
+    if groupby is None:
+        return aggregate
+    return f"{aggregate}_by_{groupby}"
+
+
+def _build_carrier_matrix(
     adata: ad.AnnData,
-    count_strategy: str = "presence",
-    genotypes: list[int] | None = None,
-    min_alt_depth: int | None = None,
-    min_depth: int | None = None,
-    max_depth: int | None = None,
-    variant_mask: pd.DataFrame | np.ndarray | None = None,
-    private_key: str | None = None,
-    key: str = "spectrum",
-    show_progress: bool = True,
-    description: str | None = None,
-) -> pd.DataFrame:
+    count_strategy: str,
+    genotypes: list[int] | None,
+    min_alt_depth: int | None,
+    min_depth: int | None,
+    max_depth: int | None,
+    variant_mask: np.ndarray | pd.DataFrame | None,
+) -> np.ndarray:
     """
-    Compute 96-channel mutation spectrum for each cell/sample or per private mutation group.
+    Build a (n_cells × n_vars) boolean matrix marking cells that carry each variant.
 
-    By default, computes spectrum per cell (stored in adata.obsm[f'spectrum_{key}']).
-    If private_key is provided, computes spectrum per private mutation group
-    (stored in adata.uns[f'spectrum_{key}']).
-
-    Parameters
-    ----------
-    adata : ad.AnnData
-        AnnData object with annotated variants
-    count_strategy : str, default 'presence'
-        Strategy for counting mutations:
-        - 'presence': Count any variant present in .X (binary)
-        - 'genotype': Count based on genotype (requires genotype layer)
-        - 'alt_depth': Count sites with AD >= threshold
-    genotypes : list of int, optional
-        Genotypes to count when count_strategy='genotype'
-        Not applicable for binary presence data (uses .X which is already filtered)
-    min_alt_depth : int, optional
-        Minimum AD when count_strategy='alt_depth'
-    min_depth : int, optional
-        Minimum DP for counting per cell (filters during counting)
-    max_depth : int, optional
-        Maximum DP for counting per cell (filters during counting)
-    variant_mask : pd.DataFrame or np.ndarray, optional
-        Boolean mask specifying which variants to count for each cell.
-
-        - If DataFrame: rows are variants (matching adata.var.index),
-          columns are cells (matching adata.obs_names)
-        - If np.ndarray: shape (n_cells, n_variants) or (n_variants,)
-        - If (n_variants,): same mask applied to all cells
-        - True = count this variant for this cell, False = exclude
-
-        Note: Cannot be used together with private_key.
-    private_key : str, optional
-        Key for private mutations DataFrame in adata.uns (e.g., 'private').
-        If provided, computes spectrum per private mutation group instead of per cell.
-        Looks up adata.uns[f'{private_key}_mutations'] and adata.uns[f'{private_key}_metadata'].
-        For each group, counts trinucleotide contexts for variants private to that group
-        within cells belonging to that group.
-        Returns (96 contexts × groups) DataFrame stored in adata.uns[f'spectrum_{key}'].
-
-        Note: Cannot be used together with variant_mask.
-    key : str, default 'spectrum'
-        Key for storing spectrum (in adata.obsm if per-cell, adata.uns if per-group)
-    show_progress : bool, default True
-        Show progress bar
-    description : str, optional
-        Description for metadata
-
-    Returns
-    -------
-    pd.DataFrame
-        Spectrum DataFrame. Shape depends on mode:
-        - Per-cell mode: (cells × 96 contexts), stored in adata.obsm[f'spectrum_{key}']
-        - Per-group mode: (96 contexts × groups), stored in adata.uns[f'spectrum_{key}']
-
-    Examples
-    --------
-    >>> import cellspec as spc
-    >>> adata = spc.pp.load_vcf("variants.vcf.gz")
-    >>> spc.pp.annotate_contexts(adata, "reference.fa")
-    >>> spc.pp.filter_to_snps(adata)
-    >>>
-    >>> # Count all variants present (default) - per cell
-    >>> spectrum = spc.tl.compute_spectrum(adata, key="all")
-    >>>
-    >>> # Count only sites with DP >= 10 - per cell
-    >>> spectrum = spc.tl.compute_spectrum(adata, min_depth=10, max_depth=200, key="dp10")
-    >>>
-    >>> # Compute spectrum per private mutation group
-    >>> spc.tl.private_mutations(adata, groupby="lineage", genotypes=[3], store_key="private")
-    >>> spectrum = spc.tl.compute_spectrum(
-    ...     adata, count_strategy="genotype", genotypes=[3], private_key="private", key="private"
-    ... )
-    >>> # Returns (96 contexts × lineages) DataFrame in adata.uns['spectrum_private']
-
-    Notes
-    -----
-    **Per-cell mode (default):**
-    The function filters counting per-cell based on depth thresholds.
-    A variant is counted for cell_i if:
-    1. It passes the count_strategy filter
-    2. AND cell_i has adequate depth at that site (if min/max_depth specified)
-    3. AND the variant_mask is True for this cell (if variant_mask provided)
-
-    Results stored in:
-    - adata.obsm[f'spectrum_{key}']: DataFrame (cells × 96 contexts)
-    - adata.uns[f'spectrum_{key}_metadata']: Dict with computation details
-
-    **Per-group mode (private_key provided):**
-    For each private mutation group:
-    1. Identifies variants marked as private to that group
-    2. Identifies cells belonging to that group
-    3. Counts trinucleotide contexts for private variants within those cells only
-    4. Applies count_strategy and depth filters per-cell as usual
-
-    Results stored in:
-    - adata.uns[f'spectrum_{key}']: DataFrame (96 contexts × groups)
-    - adata.uns[f'spectrum_{key}_metadata']: Dict with computation details
+    Applies ``count_strategy`` (presence / genotype / alt_depth) and the per-cell
+    depth filters. ``variant_mask`` can be a 1D ``(n_vars,)`` boolean (same mask
+    for every cell), a 2D ``(n_cells, n_vars)`` boolean, or a DataFrame
+    ``(n_vars × n_cells)`` matching ``adata.var.index`` and ``adata.obs_names``.
     """
-    # Validate inputs
-    if "trinuc_type" not in adata.var.columns:
-        raise ValueError("'trinuc_type' not found in adata.var. Run spc.pp.annotate_contexts() first.")
+    X = adata.X
+    if issparse(X):
+        X = X.toarray()
 
-    valid_strategies = ["presence", "genotype", "alt_depth"]
-    if count_strategy not in valid_strategies:
-        raise ValueError(f"Invalid count_strategy '{count_strategy}'. Must be one of: {', '.join(valid_strategies)}")
+    if count_strategy == "presence":
+        carrier = X > 0
+    elif count_strategy == "genotype":
+        if genotypes is None:
+            raise ValueError("count_strategy='genotype' requires genotypes parameter")
+        carrier = np.isin(X, genotypes)
+    elif count_strategy == "alt_depth":
+        if min_alt_depth is None:
+            raise ValueError("count_strategy='alt_depth' requires min_alt_depth parameter")
+        if "AD" not in adata.layers:
+            raise ValueError("count_strategy='alt_depth' requires 'AD' layer in adata.layers")
+        AD = adata.layers["AD"]
+        if issparse(AD):
+            AD = AD.toarray()
+        carrier = AD >= min_alt_depth
+    else:
+        raise ValueError(f"Invalid count_strategy '{count_strategy}'. Must be one of: presence, genotype, alt_depth")
 
-    if count_strategy == "alt_depth" and min_alt_depth is None:
-        raise ValueError("count_strategy='alt_depth' requires min_alt_depth parameter")
+    if min_depth is not None or max_depth is not None:
+        if "DP" not in adata.layers:
+            raise ValueError("min_depth/max_depth requires 'DP' layer in adata.layers")
+        DP = adata.layers["DP"]
+        if issparse(DP):
+            DP = DP.toarray()
+        if min_depth is not None:
+            carrier &= DP >= min_depth
+        if max_depth is not None:
+            carrier &= DP <= max_depth
 
-    if count_strategy == "genotype" and genotypes is None:
-        raise ValueError("count_strategy='genotype' requires genotypes parameter")
-
-    if variant_mask is not None and private_key is not None:
-        raise ValueError("variant_mask and private_key cannot both be provided")
-
-    # Branch based on mode
-    if private_key is not None:
-        return _compute_spectrum_per_group(
-            adata=adata,
-            private_key=private_key,
-            count_strategy=count_strategy,
-            genotypes=genotypes,
-            min_alt_depth=min_alt_depth,
-            min_depth=min_depth,
-            max_depth=max_depth,
-            key=key,
-            show_progress=show_progress,
-            description=description,
-        )
-
-    # Process variant_mask
-    variant_mask_array = None
     if variant_mask is not None:
         if isinstance(variant_mask, pd.DataFrame):
-            # Convert DataFrame to array (variants × cells), then transpose to (cells × variants)
-            variant_mask_array = variant_mask.T.values
+            # (variants × cells) → (cells × variants)
+            mask_arr = variant_mask.T.values
         elif isinstance(variant_mask, np.ndarray):
             if variant_mask.ndim == 1:
-                # 1D array: apply same mask to all cells
-                variant_mask_array = np.tile(variant_mask, (adata.n_obs, 1))
+                mask_arr = np.broadcast_to(variant_mask, (adata.n_obs, adata.n_vars))
             elif variant_mask.shape == (adata.n_obs, adata.n_vars):
-                variant_mask_array = variant_mask
+                mask_arr = variant_mask
             elif variant_mask.shape == (adata.n_vars, adata.n_obs):
-                # Transpose if needed
-                variant_mask_array = variant_mask.T
+                mask_arr = variant_mask.T
             else:
                 raise ValueError(
                     f"variant_mask array shape {variant_mask.shape} doesn't match "
@@ -178,373 +92,417 @@ def compute_spectrum(
                 )
         else:
             raise TypeError("variant_mask must be pd.DataFrame or np.ndarray")
+        carrier = carrier & mask_arr
 
-    # Get canonical 96 order
-    canonical_contexts = get_canonical_96_order()
-
-    # Initialize spectrum matrix (cells × contexts)
-    n_cells = adata.n_obs
-    n_contexts = len(canonical_contexts)
-    spectrum_matrix = np.zeros((n_cells, n_contexts), dtype=int)
-
-    # Get trinuc types for each variant
-    trinuc_types = adata.var["trinuc_type"].values
-
-    # Create mapping from trinuc context to index
-    context_to_idx = {context: idx for idx, context in enumerate(canonical_contexts)}
-
-    # Get data matrices
-    X = adata.X
-    if issparse(X):
-        X = X.toarray()
-
-    # Get layers if needed
-    if min_depth is not None or max_depth is not None:
-        if "DP" not in adata.layers:
-            raise ValueError("min_depth/max_depth requires 'DP' layer in adata.layers")
-        DP = adata.layers["DP"]
-        if issparse(DP):
-            DP = DP.toarray()
-    else:
-        DP = None
-
-    if count_strategy == "alt_depth":
-        if "AD" not in adata.layers:
-            raise ValueError("count_strategy='alt_depth' requires 'AD' layer")
-        AD = adata.layers["AD"]
-        if issparse(AD):
-            AD = AD.toarray()
-    else:
-        AD = None
-
-    # Compute spectrum for each cell
-    iterator = (
-        tqdm(range(n_cells), desc=f"Computing spectrum (key='{key}')", unit="cell") if show_progress else range(n_cells)
-    )
-
-    for cell_idx in iterator:
-        # Start with presence from .X
-        if count_strategy == "presence":
-            mask = X[cell_idx, :] > 0  # Binary presence
-
-        elif count_strategy == "genotype":
-            # Count specific genotypes
-            mask = np.isin(X[cell_idx, :], genotypes)
-
-        elif count_strategy == "alt_depth":
-            # Count sites with AD >= threshold
-            mask = AD[cell_idx, :] >= min_alt_depth
-
-        # Apply per-cell depth filtering
-        if min_depth is not None:
-            mask &= DP[cell_idx, :] >= min_depth
-        if max_depth is not None:
-            mask &= DP[cell_idx, :] <= max_depth
-
-        # Apply variant mask if provided
-        if variant_mask_array is not None:
-            mask &= variant_mask_array[cell_idx, :]
-
-        # Get trinuc types for variants passing filters
-        passing_trinuc_types = trinuc_types[mask]
-
-        # Count mutations by trinuc type
-        for trinuc in passing_trinuc_types:
-            if pd.notna(trinuc) and trinuc in context_to_idx:
-                spectrum_matrix[cell_idx, context_to_idx[trinuc]] += 1
-
-    # Create DataFrame
-    spectrum_df = pd.DataFrame(spectrum_matrix, index=adata.obs_names, columns=canonical_contexts)
-
-    # Store in adata
-    adata.obsm[f"spectrum_{key}"] = spectrum_df
-
-    # Store metadata
-    metadata = {
-        "count_strategy": count_strategy,
-        "min_depth": min_depth,
-        "max_depth": max_depth,
-        "description": description,
-        "n_cells": n_cells,
-        "n_variants": adata.n_vars,
-        "variant_mask_applied": variant_mask is not None,
-    }
-    if count_strategy == "genotype":
-        metadata["genotypes"] = genotypes
-    if count_strategy == "alt_depth":
-        metadata["min_alt_depth"] = min_alt_depth
-
-    adata.uns[f"spectrum_{key}_metadata"] = metadata
-
-    return spectrum_df
+    return carrier
 
 
-def _compute_spectrum_per_group(
+def _context_idx_lookup() -> tuple[list[str], dict[str, int]]:
+    """Return canonical 96 context list and context→index mapping."""
+    canonical = get_canonical_96_order()
+    return canonical, {c: i for i, c in enumerate(canonical)}
+
+
+def _per_cell_counts(carrier: np.ndarray, trinuc_types: np.ndarray) -> np.ndarray:
+    """Collapse (n_cells × n_vars) carrier bool to (n_cells × 96) context counts."""
+    canonical, context_to_idx = _context_idx_lookup()
+    n_cells = carrier.shape[0]
+    n_contexts = len(canonical)
+    out = np.zeros((n_cells, n_contexts), dtype=np.int64)
+    # Precompute each variant's context slot (-1 for missing / non-SNP).
+    ctx_slot = np.full(len(trinuc_types), -1, dtype=np.int64)
+    for j, ctx in enumerate(trinuc_types):
+        if isinstance(ctx, str) and ctx in context_to_idx:
+            ctx_slot[j] = context_to_idx[ctx]
+    valid_vars = np.where(ctx_slot >= 0)[0]
+    valid_slots = ctx_slot[valid_vars]
+    sub_carrier = carrier[:, valid_vars]
+    # np.add.at for scatter-add indexed by context slot.
+    for col_idx, slot in enumerate(valid_slots):
+        np.add.at(out, (np.arange(n_cells)[sub_carrier[:, col_idx]], slot), 1)
+    return out
+
+
+def _groupby_counts(
+    carrier: np.ndarray,
+    trinuc_types: np.ndarray,
+    group_ids: np.ndarray,
+) -> tuple[np.ndarray, list[str]]:
+    """
+    Sum carrier matrix to (96 × n_groups) via group indicator reduction.
+
+    group_ids maps each cell → group label; returns the group labels in order.
+    """
+    canonical, context_to_idx = _context_idx_lookup()
+    unique_groups, group_idx = np.unique(group_ids, return_inverse=True)
+    n_groups = len(unique_groups)
+    out = np.zeros((len(canonical), n_groups), dtype=np.int64)
+    ctx_slot = np.full(len(trinuc_types), -1, dtype=np.int64)
+    for j, ctx in enumerate(trinuc_types):
+        if isinstance(ctx, str) and ctx in context_to_idx:
+            ctx_slot[j] = context_to_idx[ctx]
+    valid_vars = np.where(ctx_slot >= 0)[0]
+    for j in valid_vars:
+        if not carrier[:, j].any():
+            continue
+        counts = np.bincount(group_idx[carrier[:, j]], minlength=n_groups)
+        out[ctx_slot[j], :] += counts
+    return out, [str(g) for g in unique_groups]
+
+
+def _randomize_counts(
+    carrier: np.ndarray,
+    trinuc_types: np.ndarray,
+    group_ids: np.ndarray | None,
+    random_state: int | np.random.Generator | None,
+) -> tuple[np.ndarray, list[str] | None]:
+    """
+    Assign each variant to one random carrier (then to that carrier's group).
+
+    Weights are uniform across *cells* that carry the variant — a group with
+    more carrier cells is proportionally more likely to be chosen. Variants
+    with no carriers contribute nothing.
+    """
+    canonical, context_to_idx = _context_idx_lookup()
+    rng = np.random.default_rng(random_state)
+
+    ctx_slot = np.full(len(trinuc_types), -1, dtype=np.int64)
+    for j, ctx in enumerate(trinuc_types):
+        if isinstance(ctx, str) and ctx in context_to_idx:
+            ctx_slot[j] = context_to_idx[ctx]
+    valid_vars = np.where(ctx_slot >= 0)[0]
+
+    has_carrier = carrier[:, valid_vars].any(axis=0)
+    final_vars = valid_vars[has_carrier]
+    if len(final_vars) == 0:
+        if group_ids is None:
+            return np.zeros(len(canonical), dtype=np.int64), None
+        unique = sorted(set(map(str, group_ids)))
+        return np.zeros((len(canonical), len(unique)), dtype=np.int64), unique
+
+    # Draw a uniform weight per (cell, valid variant) and zero out non-carriers.
+    weights = rng.random((carrier.shape[0], len(final_vars))).astype(np.float32)
+    weights *= carrier[:, final_vars]
+    chosen_cell = weights.argmax(axis=0)  # (len(final_vars),)
+
+    if group_ids is None:
+        out = np.zeros(len(canonical), dtype=np.int64)
+        np.add.at(out, ctx_slot[final_vars], 1)
+        return out, None
+
+    unique_groups, group_idx = np.unique(group_ids, return_inverse=True)
+    chosen_group = group_idx[chosen_cell]
+    out = np.zeros((len(canonical), len(unique_groups)), dtype=np.int64)
+    np.add.at(out, (ctx_slot[final_vars], chosen_group), 1)
+    return out, [str(g) for g in unique_groups]
+
+
+def _private_spectrum_counts(
     adata: ad.AnnData,
     private_key: str,
-    count_strategy: str,
-    genotypes: list[int] | None,
-    min_alt_depth: int | None,
-    min_depth: int | None,
-    max_depth: int | None,
-    key: str,
-    show_progress: bool,
-    description: str | None,
-) -> pd.DataFrame:
+    variant_mask: np.ndarray | pd.DataFrame | None,
+) -> tuple[np.ndarray, list[str]]:
     """
-    Internal function to compute spectrum per private mutation group.
+    Build (96 × owners) spectrum by counting each private variant once per owner.
 
-    For each group, counts trinucleotide contexts for variants private to that group
-    within cells belonging to that group only.
-
-    Returns (96 contexts × groups) DataFrame.
+    An "owner" is a cell (if ``private_mutations`` was run with ``groupby=None``)
+    or a group (if run with ``groupby='…'``). Each private variant contributes
+    exactly one count to its owner, regardless of how many cells carry it —
+    this avoids re-counting a mutation that is by definition shared across every
+    cell in the owner group.
     """
-    # Load private mutations data from adata.uns
+    canonical, context_to_idx = _context_idx_lookup()
     private_mutations_key = f"{private_key}_mutations"
-    private_metadata_key = f"{private_key}_metadata"
-
     if private_mutations_key not in adata.uns:
         raise ValueError(
             f"'{private_mutations_key}' not found in adata.uns. "
-            f"Run spc.tl.private_mutations() with store_key='{private_key}' first."
+            f"Run spc.tl.private_mutations(..., store_key='{private_key}') first."
         )
-
-    if private_metadata_key not in adata.uns:
-        raise ValueError(
-            f"'{private_metadata_key}' not found in adata.uns. "
-            f"Run spc.tl.private_mutations() with store_key='{private_key}' first."
-        )
-
     private_df = adata.uns[private_mutations_key]
-    private_metadata = adata.uns[private_metadata_key]
-    groupby = private_metadata.get("groupby", None)
+    # private_df is (variants × owners) bool, variant index matches adata.var.index.
+    private_arr = private_df.values.astype(bool)
 
-    # Get canonical 96 order
-    canonical_contexts = get_canonical_96_order()
-    n_contexts = len(canonical_contexts)
-    context_to_idx = {context: idx for idx, context in enumerate(canonical_contexts)}
+    if variant_mask is not None:
+        if isinstance(variant_mask, pd.DataFrame):
+            raise TypeError("variant_mask must be a 1D array when aggregate='private_spectrum'")
+        variant_mask = np.asarray(variant_mask)
+        if variant_mask.ndim != 1 or len(variant_mask) != adata.n_vars:
+            raise ValueError(
+                f"variant_mask for private_spectrum must be 1D of length n_vars={adata.n_vars}, "
+                f"got shape {variant_mask.shape}"
+            )
+        private_arr = private_arr & variant_mask[:, None]
 
-    # Get trinuc types for each variant
     trinuc_types = adata.var["trinuc_type"].values
+    ctx_slot = np.full(len(trinuc_types), -1, dtype=np.int64)
+    for j, ctx in enumerate(trinuc_types):
+        if isinstance(ctx, str) and ctx in context_to_idx:
+            ctx_slot[j] = context_to_idx[ctx]
 
-    # Get data matrices
-    X = adata.X
-    if issparse(X):
-        X = X.toarray()
-
-    # Get layers if needed
-    if min_depth is not None or max_depth is not None:
-        if "DP" not in adata.layers:
-            raise ValueError("min_depth/max_depth requires 'DP' layer in adata.layers")
-        DP = adata.layers["DP"]
-        if issparse(DP):
-            DP = DP.toarray()
-    else:
-        DP = None
-
-    if count_strategy == "alt_depth":
-        if "AD" not in adata.layers:
-            raise ValueError("count_strategy='alt_depth' requires 'AD' layer")
-        AD = adata.layers["AD"]
-        if issparse(AD):
-            AD = AD.toarray()
-    else:
-        AD = None
-
-    # Initialize spectrum matrix (contexts × groups)
-    groups = list(private_df.columns)
-    n_groups = len(groups)
-    spectrum_matrix = np.zeros((n_contexts, n_groups), dtype=int)
-
-    # Iterate over groups
-    iterator = (
-        tqdm(enumerate(groups), total=n_groups, desc=f"Computing spectrum (key='{key}')", unit="group")
-        if show_progress
-        else enumerate(groups)
-    )
-
-    for group_idx, group in iterator:
-        # Get boolean mask of variants private to this group
-        private_variant_mask = private_df[group].values
-
-        # Get indices of cells in this group
-        if groupby is None:
-            # Each "group" is a single cell
-            if group not in adata.obs_names:
-                raise ValueError(
-                    f"Group '{group}' not found in adata.obs_names. "
-                    f"Private mutations were computed per-cell but cell '{group}' is missing."
-                )
-            cell_indices = [adata.obs_names.get_loc(group)]
-        else:
-            # Group is defined by groupby column
-            if groupby not in adata.obs.columns:
-                raise ValueError(
-                    f"groupby column '{groupby}' from private mutations metadata "
-                    f"not found in adata.obs. Available columns: {list(adata.obs.columns)}"
-                )
-            cell_mask = adata.obs[groupby] == group
-            cell_indices = np.where(cell_mask)[0]
-
-        # For each cell in this group, count private variants
-        for cell_idx in cell_indices:
-            # Apply count_strategy
-            if count_strategy == "presence":
-                mask = X[cell_idx, :] > 0
-            elif count_strategy == "genotype":
-                mask = np.isin(X[cell_idx, :], genotypes)
-            elif count_strategy == "alt_depth":
-                mask = AD[cell_idx, :] >= min_alt_depth
-
-            # Apply per-cell depth filtering
-            if min_depth is not None:
-                mask &= DP[cell_idx, :] >= min_depth
-            if max_depth is not None:
-                mask &= DP[cell_idx, :] <= max_depth
-
-            # Apply private variant mask - only count variants private to this group
-            mask &= private_variant_mask
-
-            # Get trinuc types for variants passing filters
-            passing_trinuc_types = trinuc_types[mask]
-
-            # Count mutations by trinuc type
-            for trinuc in passing_trinuc_types:
-                if pd.notna(trinuc) and trinuc in context_to_idx:
-                    spectrum_matrix[context_to_idx[trinuc], group_idx] += 1
-
-    # Create DataFrame (96 contexts × groups)
-    spectrum_df = pd.DataFrame(spectrum_matrix, index=canonical_contexts, columns=groups)
-
-    # Store in adata.uns (not adata.obsm since it's not per-cell)
-    adata.uns[f"spectrum_{key}"] = spectrum_df
-
-    # Store metadata
-    metadata = {
-        "mode": "per_group",
-        "private_key": private_key,
-        "groupby": groupby,
-        "count_strategy": count_strategy,
-        "min_depth": min_depth,
-        "max_depth": max_depth,
-        "description": description,
-        "n_groups": n_groups,
-        "groups": groups,
-        "n_variants": adata.n_vars,
-    }
-    if count_strategy == "genotype":
-        metadata["genotypes"] = genotypes
-    if count_strategy == "alt_depth":
-        metadata["min_alt_depth"] = min_alt_depth
-
-    adata.uns[f"spectrum_{key}_metadata"] = metadata
-
-    return spectrum_df
+    owners = list(private_df.columns)
+    out = np.zeros((len(canonical), len(owners)), dtype=np.int64)
+    for owner_idx in range(len(owners)):
+        private_vars = private_arr[:, owner_idx]
+        valid = private_vars & (ctx_slot >= 0)
+        if not valid.any():
+            continue
+        slots = ctx_slot[valid]
+        np.add.at(out[:, owner_idx], slots, 1)
+    return out, [str(o) for o in owners]
 
 
-def compute_spectrum_from_mask(
-    adata: ad.AnnData | None = None,
-    variant_mask: str | pd.Series | np.ndarray | None = None,
-    trinuc_contexts: pd.Series | None = None,
+def compute_spectrum(
+    adata: ad.AnnData,
+    *,
+    count_strategy: str = "presence",
+    genotypes: list[int] | None = None,
+    min_alt_depth: int | None = None,
+    min_depth: int | None = None,
+    max_depth: int | None = None,
+    variant_mask: pd.DataFrame | np.ndarray | None = None,
+    aggregate: str | None = None,
+    groupby: str | None = None,
+    private_key: str | None = None,
+    random_state: int | np.random.Generator | None = None,
     key: str | None = None,
-) -> pd.Series:
+    csv_path: str | None = None,
+    show_progress: bool = True,
+    description: str | None = None,
+) -> pd.DataFrame | pd.Series:
     """
-    Compute 96-channel mutation spectrum from a boolean mask of variants.
+    Compute 96-channel trinucleotide mutation spectra from an AnnData.
 
-    Simple function to count trinucleotide contexts for a subset of variants.
-    Works with AnnData objects or directly with trinucleotide context series.
+    The ``aggregate`` argument selects what gets stored and where:
+
+    - ``aggregate=None`` (default) — per-cell matrix, stored in
+      ``adata.obsm[f'spectrum_{key}']`` as ``(n_cells, 96)``.
+    - ``aggregate='sum'`` — naive sum of carrier counts. With ``groupby=None``
+      this is a single 96-vector (all cells pooled). With ``groupby='col'`` it
+      is ``(96, n_groups)``, where each cell contributes its own carrier count
+      to the group it belongs to. A variant shared by *k* cells of a group
+      therefore contributes *k* to that group's count.
+    - ``aggregate='private_spectrum'`` — count each private variant exactly
+      once per owner (cell or group). Requires that
+      :func:`cellspec.tl.private_mutations` has already been run and the
+      resulting mask is at ``adata.uns[f'{private_key}_mutations']``. Shape is
+      ``(96, n_owners)`` where ``n_owners`` is the number of cells or groups
+      used in the ``private_mutations`` call.
+    - ``aggregate='randomize'`` — Beichman-style single-carrier assignment.
+      For each variant with at least one carrier, draw one carrier cell
+      uniformly and credit the mutation to that cell (or, with ``groupby``, to
+      that cell's group). Each variant contributes 1 total count. With
+      ``groupby=None`` the result is deterministic (every covered variant is
+      counted once); with ``groupby='col'`` the per-group distribution depends
+      on the draw, controlled by ``random_state``.
+
+    Non-``None`` aggregated spectra are stored in ``adata.uns[f'spectrum_{key}']``.
 
     Parameters
     ----------
-    adata : ad.AnnData, optional
-        AnnData with annotated variants (must have 'trinuc_type' in .var)
-    variant_mask : str, pd.Series, or np.ndarray, optional
-        Boolean mask specifying which variants to count:
-
-        - str: Column name in adata.var
-        - pd.Series: Boolean series
-        - np.ndarray: Boolean array
-
-        If None, counts all variants.
-    trinuc_contexts : pd.Series, optional
-        Trinucleotide contexts directly (if not using adata).
-        Should contain 96-type labels (e.g., 'ACA>AAA')
+    adata : ad.AnnData
+        AnnData with ``'trinuc_type'`` on ``adata.var`` (from
+        :func:`cellspec.pp.annotate_contexts`).
+    count_strategy : {'presence', 'genotype', 'alt_depth'}, default 'presence'
+        How to decide whether a cell carries a variant at a site.
+    genotypes : list of int, optional
+        Required for ``count_strategy='genotype'``.
+    min_alt_depth : int, optional
+        Required for ``count_strategy='alt_depth'``.
+    min_depth, max_depth : int, optional
+        Per-cell depth bounds filtering counting.
+    variant_mask : np.ndarray or pd.DataFrame, optional
+        Extra variant-level filter. Shapes accepted: ``(n_vars,)``,
+        ``(n_cells, n_vars)``, ``(n_vars, n_cells)``, or a DataFrame
+        ``(variants × cells)``. For ``aggregate='private_spectrum'`` only the
+        ``(n_vars,)`` form is accepted (further restricts the private set).
+    aggregate : {None, 'sum', 'private_spectrum', 'randomize'}, default None
+        See description above.
+    groupby : str, optional
+        Column in ``adata.obs`` to aggregate within. Used by
+        ``aggregate='sum'`` and ``aggregate='randomize'``. For
+        ``aggregate='private_spectrum'`` the grouping is inherited from the
+        ``private_mutations`` call and this argument is ignored.
+    private_key : str, optional
+        ``store_key`` previously passed to :func:`cellspec.tl.private_mutations`.
+        Required when ``aggregate='private_spectrum'``.
+    random_state : int or np.random.Generator, optional
+        Seed/generator for ``aggregate='randomize'`` when used with
+        ``groupby`` (ignored otherwise).
     key : str, optional
-        If provided, stores result in adata.uns[f'spectrum_{key}']
+        Storage key. If ``None``, defaults to:
+
+        - ``'per_cell'`` when ``aggregate=None``
+        - ``aggregate`` name when ``groupby=None`` (e.g. ``'sum'``,
+          ``'randomize'``)
+        - ``f'{aggregate}_by_{groupby}'`` when ``groupby`` is given
+        - ``f'private_spectrum_from_{private_key}'`` for private spectra
+    csv_path : str, optional
+        If given, writes the computed spectrum DataFrame/Series to this path
+        as CSV. Parent directories are created automatically.
+    show_progress : bool, default True
+        Draw a tqdm progress bar for the per-cell pass.
+    description : str, optional
+        Free-form string stored on metadata.
 
     Returns
     -------
-    pd.Series
-        Counts for each of the 96 mutation types
+    pd.DataFrame or pd.Series
+        - ``aggregate=None``: DataFrame ``(n_cells, 96)``
+        - ``aggregate='sum' | 'randomize'`` + ``groupby=None``: Series indexed by
+          the 96 contexts
+        - All other cases: DataFrame ``(96, n_owners_or_groups)`` with the 96
+          contexts as the row index
 
     Examples
     --------
     >>> import cellspec as spc
-    >>>
-    >>> # From AnnData with column name
-    >>> adata.var["is_somatic"] = adata.var["VAF"] > 0.1
-    >>> spectrum = spc.tl.compute_spectrum_from_mask(adata, "is_somatic")
-    >>>
-    >>> # From AnnData with boolean series
-    >>> high_qual = (adata.var["QUAL"] > 30) & (adata.var["DP"] > 100)
-    >>> spectrum = spc.tl.compute_spectrum_from_mask(adata, high_qual)
-    >>>
-    >>> # Directly from trinuc_type series
-    >>> contexts = adata.var.loc[mask, "trinuc_type"]
-    >>> spectrum = spc.tl.compute_spectrum_from_mask(trinuc_contexts=contexts)
-    >>>
-    >>> # Plot with spc.pl.spectrum_from_df
-    >>> spc.pl.spectrum_from_df(spectrum, normalize=True)
+    >>> # Per-cell matrix (default)
+    >>> spc.tl.compute_spectrum(adata)
+    >>> adata.obsm["spectrum_per_cell"]  # (n_cells, 96)
 
-    See Also
-    --------
-    compute_spectrum : Full spectrum computation with more options
-    pl.spectrum_from_df : Plot spectrum from Series/DataFrame
+    >>> # Pooled sum across all cells
+    >>> spc.tl.compute_spectrum(adata, aggregate="sum")
+    >>> adata.uns["spectrum_sum"]  # Series of length 96
+
+    >>> # Sum within lineage groups, write a CSV copy
+    >>> spc.tl.compute_spectrum(adata, aggregate="sum", groupby="lineage", csv_path="spectra/sum_by_lineage.csv")
+
+    >>> # Private-mutation spectrum per lineage
+    >>> spc.tl.private_mutations(adata, groupby="lineage", store_key="private")
+    >>> spc.tl.compute_spectrum(adata, aggregate="private_spectrum", private_key="private")
+
+    >>> # Randomized assignment per lineage (reproducible)
+    >>> spc.tl.compute_spectrum(adata, aggregate="randomize", groupby="lineage", random_state=0)
+
+    Notes
+    -----
+    **Randomize algorithm.** For each variant *j* with at least one carrier,
+    draw a uniform ``U[0, 1)`` weight for every cell that carries it (and 0 for
+    every cell that doesn't). Pick the cell with the highest weight — ties with
+    the ``0`` entries are impossible since draws are continuous. Credit the
+    variant to that cell (``groupby=None``) or to that cell's group
+    (``groupby='…'``). Because the draw weights are per-cell, groups with more
+    carrier cells are proportionally more likely to be chosen.
     """
-    # Get trinucleotide contexts
-    if trinuc_contexts is not None:
-        # Using directly provided contexts
-        contexts = trinuc_contexts
-    elif adata is not None:
-        # Get from AnnData
-        if "trinuc_type" not in adata.var.columns:
-            raise ValueError("'trinuc_type' not found in adata.var. Run spc.pp.annotate_contexts() first.")
+    if "trinuc_type" not in adata.var.columns:
+        raise ValueError("'trinuc_type' not found in adata.var. Run spc.pp.annotate_contexts() first.")
 
-        # Apply mask if provided
-        if variant_mask is None:
-            contexts = adata.var["trinuc_type"]
-        elif isinstance(variant_mask, str):
-            # Column name
-            if variant_mask not in adata.var.columns:
-                raise ValueError(f"Column '{variant_mask}' not found in adata.var")
-            mask = adata.var[variant_mask]
-            if not mask.dtype == bool:
-                raise ValueError(f"Column '{variant_mask}' must be boolean, got {mask.dtype}")
-            contexts = adata.var.loc[mask, "trinuc_type"]
-        elif isinstance(variant_mask, (pd.Series, np.ndarray)):
-            # Boolean series or array
-            if isinstance(variant_mask, np.ndarray):
-                mask = pd.Series(variant_mask, index=adata.var_names)
-            else:
-                mask = variant_mask
-            if not mask.dtype == bool:
-                raise ValueError(f"Mask must be boolean, got {mask.dtype}")
-            contexts = adata.var.loc[mask, "trinuc_type"]
-        else:
-            raise TypeError(f"variant_mask must be str, pd.Series, or np.ndarray, got {type(variant_mask)}")
+    if aggregate is not None and aggregate not in AGGREGATE_MODES:
+        raise ValueError(f"aggregate must be one of {AGGREGATE_MODES} or None, got '{aggregate}'")
+
+    if aggregate == "private_spectrum" and private_key is None:
+        raise ValueError("aggregate='private_spectrum' requires private_key")
+    if aggregate != "private_spectrum" and private_key is not None:
+        raise ValueError("private_key only applies when aggregate='private_spectrum'")
+
+    if groupby is not None and groupby not in adata.obs.columns:
+        raise ValueError(f"groupby column '{groupby}' not found in adata.obs")
+
+    if key is None:
+        key = _default_key(aggregate, groupby, private_key)
+
+    canonical = get_canonical_96_order()
+    trinuc_types = adata.var["trinuc_type"].values
+
+    # Private spectrum takes a dedicated path — no carrier matrix needed since
+    # ownership is already encoded in the private mask.
+    if aggregate == "private_spectrum":
+        matrix, owners = _private_spectrum_counts(adata, private_key, variant_mask)
+        spectrum_df = pd.DataFrame(matrix, index=canonical, columns=owners)
+        result: pd.DataFrame | pd.Series = spectrum_df
+        private_metadata = adata.uns.get(f"{private_key}_metadata", {})
+        storage_metadata = {
+            "aggregate": "private_spectrum",
+            "private_key": private_key,
+            "private_groupby": private_metadata.get("groupby"),
+            "n_owners": len(owners),
+            "owners": owners,
+            "n_variants": adata.n_vars,
+            "description": description,
+        }
+        _store_aggregated(adata, key, result, storage_metadata)
+        _maybe_write_csv(result, csv_path)
+        return result
+
+    # Everything else goes through a cell × var carrier matrix.
+    iterator_desc = f"Computing spectrum (key='{key}')"
+    if show_progress:
+        # Just a visual nod — the heavy work is vectorized below.
+        with tqdm(total=1, desc=iterator_desc, bar_format="{desc}: {elapsed}") as _:
+            carrier = _build_carrier_matrix(
+                adata, count_strategy, genotypes, min_alt_depth, min_depth, max_depth, variant_mask
+            )
     else:
-        raise ValueError("Must provide either 'adata' or 'trinuc_contexts'")
+        carrier = _build_carrier_matrix(
+            adata, count_strategy, genotypes, min_alt_depth, min_depth, max_depth, variant_mask
+        )
 
-    # Count trinucleotide types (excluding NaN)
-    canonical_order = get_canonical_96_order()
-    counts = contexts.value_counts()
+    storage_metadata = {
+        "aggregate": aggregate,
+        "count_strategy": count_strategy,
+        "min_depth": min_depth,
+        "max_depth": max_depth,
+        "groupby": groupby,
+        "description": description,
+        "n_cells": adata.n_obs,
+        "n_variants": adata.n_vars,
+        "variant_mask_applied": variant_mask is not None,
+    }
+    if count_strategy == "genotype":
+        storage_metadata["genotypes"] = genotypes
+    if count_strategy == "alt_depth":
+        storage_metadata["min_alt_depth"] = min_alt_depth
 
-    # Create full spectrum with zeros for missing types
-    spectrum = pd.Series(0, index=canonical_order, dtype=int)
-    spectrum.update(counts)
+    if aggregate is None:
+        per_cell = _per_cell_counts(carrier, trinuc_types)
+        spectrum_df = pd.DataFrame(per_cell, index=adata.obs_names, columns=canonical)
+        adata.obsm[f"spectrum_{key}"] = spectrum_df
+        adata.uns[f"spectrum_{key}_metadata"] = storage_metadata
+        _maybe_write_csv(spectrum_df, csv_path)
+        return spectrum_df
 
-    # Store in adata if requested
-    if adata is not None and key is not None:
-        adata.uns[f"spectrum_{key}"] = spectrum
+    if aggregate == "sum":
+        if groupby is None:
+            per_cell = _per_cell_counts(carrier, trinuc_types)
+            total = per_cell.sum(axis=0).astype(np.int64)
+            result = pd.Series(total, index=canonical, name=key)
+        else:
+            group_ids = adata.obs[groupby].to_numpy()
+            matrix, groups = _groupby_counts(carrier, trinuc_types, group_ids)
+            result = pd.DataFrame(matrix, index=canonical, columns=groups)
+            storage_metadata["n_groups"] = len(groups)
+            storage_metadata["groups"] = groups
+    elif aggregate == "randomize":
+        if groupby is None:
+            matrix, _ = _randomize_counts(carrier, trinuc_types, None, random_state)
+            result = pd.Series(matrix, index=canonical, name=key)
+        else:
+            group_ids = adata.obs[groupby].to_numpy()
+            matrix, groups = _randomize_counts(carrier, trinuc_types, group_ids, random_state)
+            result = pd.DataFrame(matrix, index=canonical, columns=groups)
+            storage_metadata["n_groups"] = len(groups)
+            storage_metadata["groups"] = groups
+            storage_metadata["random_state"] = random_state if isinstance(random_state, int) else None
 
-    return spectrum
+    _store_aggregated(adata, key, result, storage_metadata)
+    _maybe_write_csv(result, csv_path)
+    return result
+
+
+def _store_aggregated(adata: ad.AnnData, key: str, result: pd.DataFrame | pd.Series, metadata: dict) -> None:
+    """Write an aggregated spectrum result + metadata into ``adata.uns``."""
+    adata.uns[f"spectrum_{key}"] = result
+    adata.uns[f"spectrum_{key}_metadata"] = metadata
+
+
+def _maybe_write_csv(result: pd.DataFrame | pd.Series, csv_path: str | None) -> None:
+    """Write ``result`` to ``csv_path`` if given, creating parent dirs."""
+    if csv_path is None:
+        return
+    parent = os.path.dirname(csv_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    if isinstance(result, pd.Series):
+        result.to_frame(name=result.name or "count").to_csv(csv_path)
+    else:
+        result.to_csv(csv_path)

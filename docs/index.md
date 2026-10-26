@@ -96,15 +96,52 @@ spc.tl.compute_cell_stats(adata, min_depth=10)   # total_dp, mean_dp_per_site, c
 spc.tl.filter_sites(adata, min_bulk_dp=100, min_carrier_freq=0.01)
 spc.tl.filter_cells(adata, min_callable_sites=1000)
 
-# Spectrum
-spc.tl.compute_spectrum(adata, key="somatic")
-spc.pl.spectrum(adata, key="somatic", aggregate="sum")
+# Spectrum — per-cell matrix (default) + a pooled sum for plotting
+spc.tl.compute_spectrum(adata)                                 # obsm['spectrum_per_cell']
+spc.tl.compute_spectrum(adata, aggregate="sum")                # uns['spectrum_sum']
+spc.pl.spectrum(adata, key="sum")
 ```
 
 Each `filter_sites` / `filter_cells` call appends its applied thresholds
 to `adata.uns['filter_sites_history']` / `['filter_cells_history']`, so
 downstream functions (e.g. `tl.compute_bulk_vaf`) can warn when a later
 `min_dp` is below an already-applied floor.
+
+### Aggregating spectra
+
+`tl.compute_spectrum` can produce several related views of the data via its
+`aggregate` argument. Each call stores a result at
+`adata.obsm['spectrum_{key}']` (per-cell matrix) or
+`adata.uns['spectrum_{key}']` (aggregated Series/DataFrame); `key` is
+auto-generated to reflect the chosen aggregation, so no more
+`spectrum_spectrum` collisions. Pass `csv_path=` to also write a CSV copy.
+
+```python
+# (n_cells × 96) matrix in obsm — the raw per-cell view
+spc.tl.compute_spectrum(adata)                                            # key = 'per_cell'
+
+# Pool across all cells (Series) or within groups (96 × groups DataFrame)
+spc.tl.compute_spectrum(adata, aggregate="sum")                           # key = 'sum'
+spc.tl.compute_spectrum(adata, aggregate="sum", groupby="lineage")        # key = 'sum_by_lineage'
+
+# Spectrum of mutations private to each cell / group — each private variant
+# counted exactly once per owner. Requires tl.private_mutations first.
+spc.tl.private_mutations(adata, groupby="lineage", store_key="priv")
+spc.tl.compute_spectrum(adata, aggregate="private_spectrum", private_key="priv")
+# → key = 'private_spectrum_from_priv'
+
+# Randomize: each variant counted once total, randomly credited to one of
+# its carriers. Prevents common polymorphisms from inflating a group's
+# spectrum. With groupby=None the result is deterministic.
+spc.tl.compute_spectrum(adata, aggregate="randomize", groupby="lineage", random_state=0)
+```
+
+**Randomize algorithm.** For each variant with at least one carrier, every
+carrier cell is given a uniform `U[0, 1)` weight; non-carriers get 0. The
+cell with the highest weight wins and credits that one count to its group
+(or just to the total, when `groupby=None`). Groups with more carrier cells
+are proportionally more likely to be chosen. See Beichman et al. for the
+rationale behind single-carrier assignment of shared sites.
 
 ### Variant allele frequencies
 
@@ -134,10 +171,10 @@ Fit COSMIC mutational signatures to a computed spectrum via
 
 ```python
 # Per-cell fit (works best when each cell carries many mutations)
-spc.tl.fit_cosmic_signatures(adata, key="somatic")
+spc.tl.fit_cosmic_signatures(adata, key="per_cell")
 
 # For sparse single-cell data, aggregate within groups first
-spc.tl.fit_cosmic_signatures(adata, key="somatic", groupby="lineage")
+spc.tl.fit_cosmic_signatures(adata, key="per_cell", groupby="lineage")
 ```
 
 Please refer to the [documentation][] and [tutorials][] for more instruction,
