@@ -129,6 +129,9 @@ and this project adheres to [Semantic Versioning][].
 
 ### Removed
 
+- `tl.normalize_spectrum` — unused in the rest of the package; callers
+  should divide the stored spectrum themselves (e.g. by `.sum(axis=1)` for
+  proportions or by an `.obs` column for per-callable-site rates).
 - `tl.compute_spectrum_from_mask` — the "I have a boolean variant mask,
   give me 96-channel counts" case is now served by
   `tl.compute_spectrum(..., variant_mask=mask, aggregate='sum')`.

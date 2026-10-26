@@ -433,9 +433,7 @@ def compare_spectra(
     adata : ad.AnnData
     keys : list of str
     normalize : bool, default False
-        Normalize each row to proportions. For advanced normalization (by
-        callable sites, coverage, etc.), use :func:`cellspec.tl.normalize_spectrum`
-        first and pass the normalized keys.
+        Normalize each row to proportions.
     palette : str, list, dict, or None, optional
     outpath : str, optional
     figsize : tuple, optional

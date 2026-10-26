@@ -1,7 +1,6 @@
 """Tools for mutation spectrum analysis."""
 
 from .filter import filter_cells, filter_sites
-from .normalize import normalize_spectrum
 from .private import private_mutations
 from .signatures import fit_cosmic_signatures
 from .spectrum import compute_spectrum
@@ -14,7 +13,6 @@ __all__ = [
     "compute_cell_stats",
     "filter_sites",
     "filter_cells",
-    "normalize_spectrum",
     "private_mutations",
     "add_vaf_layer",
     "compute_bulk_vaf",
