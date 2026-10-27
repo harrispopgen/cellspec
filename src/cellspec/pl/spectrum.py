@@ -69,8 +69,8 @@ def _resolve_palette(palette: str | list[str] | dict[str, str] | None) -> dict[s
 
 
 def spectrum(
-    adata: ad.AnnData,
-    key: str = "per_cell",
+    data: ad.AnnData | pd.DataFrame | pd.Series,
+    key: str = "sum",
     *,
     cells: list[str] | None = None,
     normalize: bool = False,
@@ -94,30 +94,38 @@ def spectrum(
     wspace: float = _STYLE_DEFAULTS["wspace"],
 ) -> None:
     """
-    Plot a mutation spectrum stored by :func:`cellspec.tl.compute_spectrum`.
+    Plot a mutation spectrum.
 
-    The storage layout determines the plot: aggregation and grouping now live
-    on ``tl.compute_spectrum`` and this function just reads whatever was
-    written for ``key``.
+    Accepts either a stored spectrum on an ``AnnData`` (looked up by ``key``)
+    or a bare ``DataFrame`` / ``Series`` whose shape identifies the layout.
 
-    - ``adata.obsm[f'spectrum_{key}']`` — ``(n_cells, 96)`` DataFrame; renders
+    AnnData lookup
+    --------------
+    - ``adata.obsm[f'spectrum_{key}']`` — ``(n_cells, 96)`` DataFrame, rendered
       as a multi-row ribbon (one row per cell). Use ``cells=`` to subset.
-    - ``adata.uns[f'spectrum_{key}']`` — either a Series of length 96 (single
-      ribbon) or a ``(96, n_groups)`` DataFrame (one row per group).
+    - ``adata.uns[f'spectrum_{key}']`` — a Series of length 96 (single ribbon)
+      or a ``(96, n_groups)`` DataFrame (one row per group).
+
+    Direct DataFrame / Series
+    -------------------------
+    - ``pd.Series`` of length 96 → single ribbon.
+    - ``pd.DataFrame`` with 96 columns → one row per DataFrame row (cells × 96).
+    - ``pd.DataFrame`` with 96 rows → one row per DataFrame column (96 × groups).
+
+    When ``data`` is a DataFrame or Series, ``key`` and ``cells`` are ignored.
 
     Parameters
     ----------
-    adata : ad.AnnData
-    key : str, default 'per_cell'
-        Key suffix. Looks up ``adata.obsm['spectrum_{key}']`` or
-        ``adata.uns['spectrum_{key}']``.
+    data : ad.AnnData, pd.DataFrame, or pd.Series
+    key : str, default 'sum'
+        Lookup key for AnnData input. Matches the default of
+        :func:`cellspec.tl.compute_spectrum`.
     cells : list of str, optional
-        Only honored when the spectrum is stored in ``adata.obsm`` (per-cell).
-        Restricts the plot to the given cell names.
+        Only honored for a per-cell matrix in ``adata.obsm``.
     normalize : bool, default False
         Convert each ribbon's counts to proportions (sum to 1).
     palette : str, list, dict, or None, optional
-        Mutation-type color palette (see :func:`cellspec.pl.spectrum_from_df`).
+        Mutation-type color palette.
     outpath : str, optional
         If given, saves the figure to this path (parent dirs auto-created).
     figsize : tuple, optional
@@ -126,42 +134,26 @@ def spectrum(
     title, ylabel, ylim, transparent, yticks, ytick_scale, ytick_unit_label,
     show_mut_type_titles, show_xticks, show_legend, bar_width, group_padding,
     left_pad, wspace :
-        Style knobs; see :func:`cellspec.pl.spectrum_from_df`.
+        Style knobs for the ribbon layout.
 
     Examples
     --------
     >>> import cellspec as spc
-    >>> # Per-cell matrix: plot one row per cell (subset first for large N)
+    >>> # Default: compute_spectrum writes 'sum' and spectrum reads it
     >>> spc.tl.compute_spectrum(adata)
-    >>> spc.pl.spectrum(adata, key="per_cell", cells=adata.obs_names[:5])
+    >>> spc.pl.spectrum(adata)
     >>>
-    >>> # Pooled sum across all cells (Series)
-    >>> spc.tl.compute_spectrum(adata, aggregate="sum")
-    >>> spc.pl.spectrum(adata, key="sum")
+    >>> # Per-cell matrix: plot one row per cell (subset first for large N)
+    >>> spc.tl.compute_spectrum(adata, aggregate=None)
+    >>> spc.pl.spectrum(adata, key="per_cell", cells=adata.obs_names[:5])
     >>>
     >>> # Sum by group (one ribbon per group)
     >>> spc.tl.compute_spectrum(adata, aggregate="sum", groupby="lineage")
     >>> spc.pl.spectrum(adata, key="sum_by_lineage")
     >>>
-    >>> # Private spectrum per lineage
-    >>> spc.tl.private_mutations(adata, groupby="lineage", store_key="private")
-    >>> spc.tl.compute_spectrum(adata, aggregate="private_spectrum", private_key="private")
-    >>> spc.pl.spectrum(adata, key="private_spectrum_from_private")
+    >>> # Plot a DataFrame or Series directly
+    >>> spc.pl.spectrum(my_series, title="External spectrum")
     """
-    spectrum_key = f"spectrum_{key}"
-    in_obsm = spectrum_key in adata.obsm
-    in_uns = spectrum_key in adata.uns
-
-    if not in_obsm and not in_uns:
-        raise ValueError(
-            f"'{spectrum_key}' not found in adata.obsm or adata.uns. "
-            f"Run spc.tl.compute_spectrum(..., key='{key}') first."
-        )
-    if in_obsm and in_uns:
-        raise ValueError(
-            f"'{spectrum_key}' is set in both adata.obsm and adata.uns. Drop one before plotting to disambiguate."
-        )
-
     if outpath:
         parent_dir = os.path.dirname(outpath)
         if parent_dir:
@@ -187,319 +179,73 @@ def spectrum(
         "wspace": wspace,
     }
 
+    # Direct DataFrame / Series path
+    if isinstance(data, (pd.Series, pd.DataFrame)):
+        if cells is not None:
+            raise ValueError("'cells' only applies when passing an AnnData.")
+        _plot_from_table(data, title=title, figsize=figsize, **style_kwargs)
+        return
+
+    if not isinstance(data, ad.AnnData):
+        raise TypeError(f"data must be AnnData, DataFrame, or Series; got {type(data)}")
+
+    spectrum_key = f"spectrum_{key}"
+    in_obsm = spectrum_key in data.obsm
+    in_uns = spectrum_key in data.uns
+
+    if not in_obsm and not in_uns:
+        raise ValueError(
+            f"'{spectrum_key}' not found in adata.obsm or adata.uns. "
+            f"Run spc.tl.compute_spectrum(..., key='{key}') first."
+        )
+    if in_obsm and in_uns:
+        raise ValueError(
+            f"'{spectrum_key}' is set in both adata.obsm and adata.uns. Drop one before plotting to disambiguate."
+        )
+
     if in_obsm:
-        per_cell_df = adata.obsm[spectrum_key]
+        per_cell_df = data.obsm[spectrum_key]
         if cells is not None:
             per_cell_df = per_cell_df.loc[cells, :]
-        spectra_dict = {idx: per_cell_df.loc[idx, :] for idx in per_cell_df.index}
-        _plot_multiple_spectra(
-            spectra_dict,
-            title=title,
-            figsize=figsize or (12, 3 * max(1, len(spectra_dict))),
-            **style_kwargs,
-        )
+        _plot_from_table(per_cell_df, title=title, figsize=figsize, **style_kwargs)
         return
 
-    obj = adata.uns[spectrum_key]
     if cells is not None:
         raise ValueError("'cells' only applies to per-cell spectra stored in adata.obsm.")
+    _plot_from_table(data.uns[spectrum_key], title=title, figsize=figsize, **style_kwargs)
 
+
+def _plot_from_table(
+    obj: pd.Series | pd.DataFrame,
+    *,
+    title: str | None,
+    figsize: tuple[float, float] | None,
+    **style_kwargs,
+) -> None:
+    """Dispatch a Series / DataFrame to the right ribbon helper based on shape."""
     if isinstance(obj, pd.Series):
         _plot_single_spectrum(obj, title=title, figsize=figsize or (12, 3), **style_kwargs)
-    elif isinstance(obj, pd.DataFrame):
-        spectra_dict = {col: obj[col] for col in obj.columns}
-        _plot_multiple_spectra(
-            spectra_dict,
-            title=title,
-            figsize=figsize or (12, 3 * max(1, len(spectra_dict))),
-            **style_kwargs,
-        )
-    else:
-        raise TypeError(f"adata.uns['{spectrum_key}'] has unsupported type {type(obj)}")
-
-
-def spectrum_from_df(
-    spectrum_df: pd.DataFrame,
-    normalize: bool = False,
-    palette: str | list[str] | dict[str, str] | None = None,
-    title: str | None = None,
-    outpath: str | None = None,
-    figsize: tuple[float, float] | None = None,
-    dpi: int = 600,
-    ylabel: str | None = None,
-    ylim: tuple[float, float] | None = None,
-    transparent: bool = False,
-    yticks: list[float] | np.ndarray | None = None,
-    ytick_scale: float = 1.0,
-    ytick_unit_label: str | None = None,
-    show_mut_type_titles: bool = True,
-    show_xticks: bool = True,
-    show_legend: bool = False,
-    bar_width: float = _STYLE_DEFAULTS["bar_width"],
-    group_padding: float = _STYLE_DEFAULTS["group_padding"],
-    left_pad: float = _STYLE_DEFAULTS["left_pad"],
-    wspace: float = _STYLE_DEFAULTS["wspace"],
-) -> None:
-    """
-    Plot mutation spectrum directly from a DataFrame.
-
-    Automatically detects format based on shape:
-    - If shape is (n_samples, 96): treats as per-cell format (cells × contexts)
-    - If shape is (96, n_groups): treats as per-group format (contexts × groups)
-    - If shape is (96,): treats as single spectrum
-
-    Parameters
-    ----------
-    spectrum_df : pd.DataFrame or pd.Series
-        Mutation spectrum DataFrame or Series:
-        - Series with 96 trinuc contexts: plots single spectrum
-        - DataFrame (cells × 96 contexts): plots multiple spectra, one row per cell
-        - DataFrame (96 contexts × groups): plots multiple spectra, one row per group
-    normalize : bool, default False
-        Normalize to proportions (sum to 1)
-    palette : str, list, dict, or None, optional
-        Color palette (see spc.pl.spectrum for details)
-    title : str, optional
-        Plot title
-    outpath : str, optional
-        Full output path for saving plot (e.g., 'results/spectrum.png').
-        Parent directory will be created if it doesn't exist.
-        If None, plot is displayed but not saved.
-    figsize : tuple, optional
-        Figure size. If None, auto-calculated based on number of spectra
-    dpi : int, default 600
-        DPI for saved figure
-    ylabel : str, optional
-        Y-axis label. If None, uses "Mutation count" or "Proportion" based on normalize
-    ylim : tuple of (float, float), optional
-        Y-axis limits as (ymin, ymax). If None, automatically calculated from data.
-    transparent : bool, default False
-        Save figure with transparent background (only affects saved files)
-    yticks, ytick_scale, ytick_unit_label, show_mut_type_titles, show_xticks,
-    show_legend, bar_width, group_padding, left_pad, wspace :
-        Style knobs forwarded to the plotting backend. See
-        :func:`cellspec.pl.spectrum` for descriptions.
-
-    Examples
-    --------
-    >>> import cellspec as spc
-    >>> import pandas as pd
-    >>>
-    >>> # Plot a single spectrum (Series)
-    >>> spectrum = adata.obsm["spectrum_somatic"].sum(axis=0)
-    >>> spc.pl.spectrum_from_df(spectrum, title="Total Somatic Mutations")
-    >>>
-    >>> # Save plot to a file
-    >>> spc.pl.spectrum_from_df(spectrum, outpath="results/spectrum.png")
-    >>>
-    >>> # Plot from custom DataFrame (96 contexts × groups)
-    >>> private_spectra = adata.uns["spectrum_private"]
-    >>> spc.pl.spectrum_from_df(private_spectra, title="Private Mutations", normalize=True)
-    >>>
-    >>> # Plot from subset of cells (cells × 96 contexts)
-    >>> cell_subset = adata.obsm["spectrum_somatic"].loc[["cell1", "cell2", "cell3"]]
-    >>> spc.pl.spectrum_from_df(cell_subset, title="Selected Cells")
-
-    Notes
-    -----
-    This function automatically detects the DataFrame format and plots accordingly.
-    For more control over grouping and aggregation from AnnData objects, use spc.pl.spectrum().
-    """
-    # Create parent directory if saving
-    if outpath:
-        parent_dir = os.path.dirname(outpath)
-        if parent_dir:
-            os.makedirs(parent_dir, exist_ok=True)
-
-    # Handle Series (single spectrum)
-    if isinstance(spectrum_df, pd.Series):
-        if figsize is None:
-            figsize = (12, 3)
-        _plot_single_spectrum(
-            spectrum_df,
-            normalize=normalize,
-            palette=palette,
-            title=title,
-            outpath=outpath,
-            figsize=figsize,
-            dpi=dpi,
-            ylabel=ylabel,
-            ylim=ylim,
-            transparent=transparent,
-            yticks=yticks,
-            ytick_scale=ytick_scale,
-            ytick_unit_label=ytick_unit_label,
-            show_mut_type_titles=show_mut_type_titles,
-            show_xticks=show_xticks,
-            show_legend=show_legend,
-            bar_width=bar_width,
-            group_padding=group_padding,
-            left_pad=left_pad,
-            wspace=wspace,
-        )
-        if outpath:
-            print(f"Saved: {outpath}")
         return
 
-    # Handle DataFrame
-    if not isinstance(spectrum_df, pd.DataFrame):
-        raise TypeError(f"spectrum_df must be pd.DataFrame or pd.Series, got {type(spectrum_df)}")
+    if not isinstance(obj, pd.DataFrame):
+        raise TypeError(f"Expected pd.DataFrame or pd.Series, got {type(obj)}")
 
-    # Detect format based on shape
-    n_rows, n_cols = spectrum_df.shape
-
-    # Determine orientation
+    n_rows, n_cols = obj.shape
     if n_cols == 96:
-        # Per-cell format: (cells × 96 contexts)
-        # Plot as multiple spectra, one per row
-        spectra_dict = {idx: spectrum_df.loc[idx, :] for idx in spectrum_df.index}
+        spectra_dict = {idx: obj.loc[idx, :] for idx in obj.index}
     elif n_rows == 96:
-        # Per-group format: (96 contexts × groups)
-        # Plot as multiple spectra, one per column
-        spectra_dict = {col: spectrum_df[col] for col in spectrum_df.columns}
+        spectra_dict = {col: obj[col] for col in obj.columns}
     else:
         raise ValueError(
-            f"Unexpected spectrum shape {spectrum_df.shape}. "
+            f"Unexpected spectrum shape {obj.shape}. "
             f"Expected either (n_samples, 96) or (96, n_groups) for 96-channel spectra."
         )
 
-    # Auto-calculate figsize if not provided
-    if figsize is None:
-        n_spectra = len(spectra_dict)
-        figsize = (12, 3 * n_spectra)
-
     _plot_multiple_spectra(
         spectra_dict,
-        normalize=normalize,
-        palette=palette,
         title=title,
-        outpath=outpath,
-        figsize=figsize,
-        dpi=dpi,
-        ylabel=ylabel,
-        ylim=ylim,
-        transparent=transparent,
-        yticks=yticks,
-        ytick_scale=ytick_scale,
-        ytick_unit_label=ytick_unit_label,
-        show_mut_type_titles=show_mut_type_titles,
-        show_xticks=show_xticks,
-        show_legend=show_legend,
-        bar_width=bar_width,
-        group_padding=group_padding,
-        left_pad=left_pad,
-        wspace=wspace,
-    )
-    if outpath:
-        print(f"Saved: {outpath}")
-
-
-def compare_spectra(
-    adata: ad.AnnData,
-    keys: list[str],
-    normalize: bool = False,
-    palette: str | list[str] | dict[str, str] | None = None,
-    outpath: str | None = None,
-    figsize: tuple[float, float] | None = None,
-    dpi: int = 600,
-    title: str | None = None,
-    ylabel: str | None = None,
-    ylim: tuple[float, float] | None = None,
-    transparent: bool = False,
-    yticks: list[float] | np.ndarray | None = None,
-    ytick_scale: float = 1.0,
-    ytick_unit_label: str | None = None,
-    show_mut_type_titles: bool = True,
-    show_xticks: bool = True,
-    show_legend: bool = False,
-    bar_width: float = _STYLE_DEFAULTS["bar_width"],
-    group_padding: float = _STYLE_DEFAULTS["group_padding"],
-    left_pad: float = _STYLE_DEFAULTS["left_pad"],
-    wspace: float = _STYLE_DEFAULTS["wspace"],
-) -> None:
-    """
-    Compare multiple spectra on a single stacked figure.
-
-    Each ``key`` is resolved against ``adata.obsm`` and ``adata.uns``:
-
-    - per-cell matrix in ``adata.obsm['spectrum_{key}']`` → summed across all
-      cells to produce one row
-    - Series in ``adata.uns['spectrum_{key}']`` → used as-is (one row)
-    - DataFrame ``(96, n_groups)`` in ``adata.uns['spectrum_{key}']`` → each
-      group becomes its own row, labeled ``'{key}_{group}'``
-
-    Parameters
-    ----------
-    adata : ad.AnnData
-    keys : list of str
-    normalize : bool, default False
-        Normalize each row to proportions.
-    palette : str, list, dict, or None, optional
-    outpath : str, optional
-    figsize : tuple, optional
-    dpi : int, default 600
-    title : str, optional
-    ylabel : str, optional
-    ylim : tuple of (float, float), optional
-    transparent : bool, default False
-    yticks, ytick_scale, ytick_unit_label, show_mut_type_titles, show_xticks,
-    show_legend, bar_width, group_padding, left_pad, wspace :
-        Style knobs forwarded to the plotting backend. See
-        :func:`cellspec.pl.spectrum` for descriptions.
-
-    Examples
-    --------
-    >>> import cellspec as spc
-    >>> # Compare two per-cell spectra, pooled across all cells
-    >>> spc.pl.compare_spectra(adata, keys=["germline", "somatic"], normalize=True, outpath="figures/compare.png")
-    >>>
-    >>> # Compare per-group private spectra across keys
-    >>> spc.pl.compare_spectra(adata, keys=["private_spectrum_from_private"])
-    """
-    spectra_dict: dict[str, pd.Series] = {}
-    for key in keys:
-        spectrum_key = f"spectrum_{key}"
-        in_obsm = spectrum_key in adata.obsm
-        in_uns = spectrum_key in adata.uns
-
-        if not in_obsm and not in_uns:
-            raise ValueError(f"'{spectrum_key}' not found in adata.obsm or adata.uns")
-        if in_obsm and in_uns:
-            raise ValueError(f"'{spectrum_key}' is set in both adata.obsm and adata.uns")
-
-        if in_obsm:
-            spectra_dict[key] = adata.obsm[spectrum_key].sum(axis=0)
-        else:
-            obj = adata.uns[spectrum_key]
-            if isinstance(obj, pd.Series):
-                spectra_dict[key] = obj
-            elif isinstance(obj, pd.DataFrame):
-                for group in obj.columns:
-                    spectra_dict[f"{key}_{group}"] = obj[group]
-            else:
-                raise TypeError(f"adata.uns['{spectrum_key}'] has unsupported type {type(obj)}")
-
-    _plot_multiple_spectra(
-        spectra_dict,
-        normalize=normalize,
-        palette=palette,
-        title=title or "Spectrum Comparison",
-        outpath=outpath,
-        figsize=figsize,
-        dpi=dpi,
-        ylabel=ylabel,
-        ylim=ylim,
-        transparent=transparent,
-        yticks=yticks,
-        ytick_scale=ytick_scale,
-        ytick_unit_label=ytick_unit_label,
-        show_mut_type_titles=show_mut_type_titles,
-        show_xticks=show_xticks,
-        show_legend=show_legend,
-        bar_width=bar_width,
-        group_padding=group_padding,
-        left_pad=left_pad,
-        wspace=wspace,
+        figsize=figsize or (12, 3 * max(1, len(spectra_dict))),
+        **style_kwargs,
     )
 
 

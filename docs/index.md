@@ -96,10 +96,9 @@ spc.tl.compute_cell_stats(adata, min_depth=10)   # total_dp, mean_dp_per_site, c
 spc.tl.filter_sites(adata, min_bulk_dp=100, min_carrier_freq=0.01)
 spc.tl.filter_cells(adata, min_callable_sites=1000)
 
-# Spectrum — per-cell matrix (default) + a pooled sum for plotting
-spc.tl.compute_spectrum(adata)                                 # obsm['spectrum_per_cell']
-spc.tl.compute_spectrum(adata, aggregate="sum")                # uns['spectrum_sum']
-spc.pl.spectrum(adata, key="sum")
+# Spectrum — pooled sum across all cells is the default
+spc.tl.compute_spectrum(adata)                                 # uns['spectrum_sum']
+spc.pl.spectrum(adata)                                         # looks up key='sum'
 ```
 
 Each `filter_sites` / `filter_cells` call appends its applied thresholds
@@ -117,11 +116,13 @@ auto-generated to reflect the chosen aggregation, so no more
 `spectrum_spectrum` collisions. Pass `csv_path=` to also write a CSV copy.
 
 ```python
-# (n_cells × 96) matrix in obsm — the raw per-cell view
-spc.tl.compute_spectrum(adata)                                            # key = 'per_cell'
+# Pool across all cells (default) — stored in uns as a Series
+spc.tl.compute_spectrum(adata)                                            # key = 'sum'
 
-# Pool across all cells (Series) or within groups (96 × groups DataFrame)
-spc.tl.compute_spectrum(adata, aggregate="sum")                           # key = 'sum'
+# Per-cell matrix (needed by fit_cosmic_signatures and similar) — stored in obsm
+spc.tl.compute_spectrum(adata, aggregate=None)                            # key = 'per_cell'
+
+# Sum within groups: 96 × groups DataFrame in uns
 spc.tl.compute_spectrum(adata, aggregate="sum", groupby="lineage")        # key = 'sum_by_lineage'
 
 # Spectrum of mutations private to each cell / group — each private variant

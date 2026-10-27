@@ -12,6 +12,4 @@ Functions for visualizing mutation spectra.
     :toctree: ../generated
 
     pl.spectrum
-    pl.spectrum_from_df
-    pl.compare_spectra
 ```

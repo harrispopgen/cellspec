@@ -72,6 +72,15 @@ and this project adheres to [Semantic Versioning][].
 
 ### Changed
 
+- **`tl.compute_spectrum` default `aggregate` is now `'sum'`** (breaking).
+  Calling `compute_spectrum(adata)` now stores a pooled 96-channel Series at
+  `adata.uns['spectrum_sum']`. The per-cell matrix is still available via
+  `aggregate=None` (writes `adata.obsm['spectrum_per_cell']`).
+- **`pl.spectrum` accepts DataFrames and Series directly**: the first
+  positional argument can be an `AnnData` (looked up by `key`), a
+  `pd.DataFrame` (cells × 96 or 96 × groups), or a `pd.Series` of length 96.
+  `key` and `cells` are ignored for the non-AnnData paths. Default `key`
+  changed to `'sum'` to match the new `compute_spectrum` default.
 - **`pl.spectrum` simplified (breaking)**: dropped `groupby`, `aggregate`,
   and `outdir` arguments. The function now autodetects what to plot from
   the storage location — `adata.obsm[f'spectrum_{key}']` renders as a
@@ -79,9 +88,6 @@ and this project adheres to [Semantic Versioning][].
   `adata.uns[f'spectrum_{key}']` is plotted as either a single Series or a
   per-group DataFrame. All grouping and aggregation now live on
   `tl.compute_spectrum`.
-- **`pl.compare_spectra` simplified (breaking)**: dropped the `aggregate`
-  argument. Per-cell storage is summed; `uns` Series/DataFrames are read
-  directly, with DataFrame columns expanded into per-group rows.
 - `tl.compute_spectrum` default `key` changed from `'spectrum'` to the
   auto-generated name described above. Existing callers that passed an
   explicit `key` are unaffected; callers relying on `obsm['spectrum_spectrum']`
@@ -129,6 +135,10 @@ and this project adheres to [Semantic Versioning][].
 
 ### Removed
 
+- `pl.spectrum_from_df` — folded into `pl.spectrum`, which now accepts a
+  `pd.DataFrame` or `pd.Series` as its first argument.
+- `pl.compare_spectra` — the ribbon layout handles multi-row stacks already;
+  callers can concatenate Series/DataFrames and pass them to `pl.spectrum`.
 - `tl.normalize_spectrum` — unused in the rest of the package; callers
   should divide the stored spectrum themselves (e.g. by `.sum(axis=1)` for
   proportions or by an `.obs` column for per-callable-site rates).

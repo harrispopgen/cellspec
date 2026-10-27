@@ -260,7 +260,7 @@ def compute_spectrum(
     min_depth: int | None = None,
     max_depth: int | None = None,
     variant_mask: pd.DataFrame | np.ndarray | None = None,
-    aggregate: str | None = None,
+    aggregate: str | None = "sum",
     groupby: str | None = None,
     private_key: str | None = None,
     random_state: int | np.random.Generator | None = None,
@@ -274,9 +274,9 @@ def compute_spectrum(
 
     The ``aggregate`` argument selects what gets stored and where:
 
-    - ``aggregate=None`` (default) — per-cell matrix, stored in
+    - ``aggregate=None`` — per-cell matrix, stored in
       ``adata.obsm[f'spectrum_{key}']`` as ``(n_cells, 96)``.
-    - ``aggregate='sum'`` — naive sum of carrier counts. With ``groupby=None``
+    - ``aggregate='sum'`` (default) — naive sum of carrier counts. With ``groupby=None``
       this is a single 96-vector (all cells pooled). With ``groupby='col'`` it
       is ``(96, n_groups)``, where each cell contributes its own carrier count
       to the group it belongs to. A variant shared by *k* cells of a group
@@ -315,7 +315,7 @@ def compute_spectrum(
         ``(n_cells, n_vars)``, ``(n_vars, n_cells)``, or a DataFrame
         ``(variants × cells)``. For ``aggregate='private_spectrum'`` only the
         ``(n_vars,)`` form is accepted (further restricts the private set).
-    aggregate : {None, 'sum', 'private_spectrum', 'randomize'}, default None
+    aggregate : {None, 'sum', 'private_spectrum', 'randomize'}, default 'sum'
         See description above.
     groupby : str, optional
         Column in ``adata.obs`` to aggregate within. Used by
